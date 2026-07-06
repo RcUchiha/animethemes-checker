@@ -1,0 +1,18 @@
+# Datos generados en tiempo de ejecución (no versionar)
+cache_jikan.json
+config.json
+*.csv
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Editores / OS
+.vscode/
+.idea/
+.DS_Store
