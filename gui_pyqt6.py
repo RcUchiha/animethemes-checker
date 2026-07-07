@@ -5,13 +5,12 @@ Ventana principal con selector de idioma y un QTabWidget con 2 pestañas,
 cada una con su propio panel de controles (año, temporada, escanear,
 exportar), barra de progreso y sub-pestañas de resultados:
 - "Discrepancias" (PestanaDiscrepancias): corre orq.escanear_temporada en
-  un hilo aparte (WorkerEscaneoDiscrepancias) y muestra las discrepancias
-  encontradas agrupadas por anime, más los omitidos/errores y la alerta
-  canario de posible cambio de HTML en MAL (ver orquestador.py, issue #3).
+  un hilo aparte (_WorkerEscaneo) y muestra las discrepancias encontradas
+  agrupadas por anime, más los omitidos/errores y la alerta canario de
+  posible cambio de HTML en MAL (ver orquestador.py, issue #3).
 - "Animes Faltantes" (PestanaAnimesFaltantes): corre
-  orq.detectar_animes_faltantes_en_at en un hilo aparte
-  (WorkerEscaneoFaltantes) y muestra los animes que MAL reporta y
-  AnimeThemes no tiene.
+  orq.detectar_animes_faltantes_en_at en un hilo aparte (_WorkerEscaneo)
+  y muestra los animes que MAL reporta y AnimeThemes no tiene.
 
 Ambas pestañas cachean resultados en memoria por (año, temporada) para no
 tener que re-escanear solo por cambiar el selector, exportan a CSV, y
@@ -152,20 +151,30 @@ class DelegateTipo(QStyledItemDelegate):
         )
 
 
-class WorkerEscaneoDiscrepancias(QThread):
+class _WorkerEscaneo(QThread):
     """
-    Corre orq.escanear_temporada en un hilo separado para no congelar la
-    UI. Usa señales de Qt (el patrón nativo, en vez de queue.Queue +
-    root.after() que usábamos en Tkinter) para reportar progreso y
-    resultado final de forma segura hacia el hilo principal.
+    Corre una función del orquestador (orq.escanear_temporada u
+    orq.detectar_animes_faltantes_en_at) en un hilo separado para no
+    congelar la UI. Usa señales de Qt (el patrón nativo, en vez de
+    queue.Queue + root.after() que usábamos en Tkinter) para reportar
+    progreso y resultado final de forma segura hacia el hilo principal.
+
+    Antes existían dos clases QThread casi idénticas
+    (WorkerEscaneoDiscrepancias / WorkerEscaneoFaltantes), una por cada
+    función del orquestador que corren — la única diferencia real era
+    esa función y el tipo del resultado que emiten (terminado emite
+    pyqtSignal(object), así que no hace falta un signal distinto por
+    tipo). Se unifican recibiendo la función a ejecutar como parámetro
+    del constructor.
     """
 
     progreso = pyqtSignal(int, int, str)         # indice, total, nombre_anime
-    terminado = pyqtSignal(object)                # orq.ResultadoEscaneo
+    terminado = pyqtSignal(object)                # orq.ResultadoEscaneo u orq.ResultadoFaltantes
     error_fatal = pyqtSignal(str)                  # mensaje de error
 
-    def __init__(self, year: int, season: str):
+    def __init__(self, funcion_escaneo, year: int, season: str):
         super().__init__()
+        self.funcion_escaneo = funcion_escaneo
         self.year = year
         self.season = season
 
@@ -174,40 +183,11 @@ class WorkerEscaneoDiscrepancias(QThread):
             self.progreso.emit(indice, total, nombre_anime)
 
         try:
-            resultado = orq.escanear_temporada(
+            resultado = self.funcion_escaneo(
                 self.year, self.season, progreso_callback=callback_progreso
             )
             self.terminado.emit(resultado)
         except Exception as e:  # noqa: BLE001 — cualquier fallo se reporta, no debe tronar el hilo
-            self.error_fatal.emit(str(e))
-
-
-class WorkerEscaneoFaltantes(QThread):
-    """
-    Corre orq.detectar_animes_faltantes_en_at en un hilo separado, igual
-    patrón que WorkerEscaneoDiscrepancias pero para la otra función del
-    orquestador (detección de animes ausentes por completo en AT).
-    """
-
-    progreso = pyqtSignal(int, int, str)
-    terminado = pyqtSignal(object)                # orq.ResultadoFaltantes
-    error_fatal = pyqtSignal(str)
-
-    def __init__(self, year: int, season: str):
-        super().__init__()
-        self.year = year
-        self.season = season
-
-    def run(self):
-        def callback_progreso(indice, total, nombre_anime):
-            self.progreso.emit(indice, total, nombre_anime)
-
-        try:
-            resultado = orq.detectar_animes_faltantes_en_at(
-                self.year, self.season, progreso_callback=callback_progreso
-            )
-            self.terminado.emit(resultado)
-        except Exception as e:  # noqa: BLE001
             self.error_fatal.emit(str(e))
 
 
@@ -479,7 +459,7 @@ class PestanaDiscrepancias(QWidget):
         }
         self._resultado_actual: orq.ResultadoEscaneo | None = None
         self._filas_discrepancias: list[tuple[str, list[tuple[str, str]], str]] = []  # (nombre, [(tipo, desc)], url_at)
-        self._worker: WorkerEscaneoDiscrepancias | None = None
+        self._worker: _WorkerEscaneo | None = None
         # Caché en memoria de resultados ya escaneados en esta sesión, por
         # (year, season) -> (datetime_en_que_se_guardo, ResultadoEscaneo).
         # Permite volver a ver una temporada ya escaneada sin tener que
@@ -685,7 +665,7 @@ class PestanaDiscrepancias(QWidget):
         self.barra_progreso.setValue(0)
         self.label_estado.setText(i18n.t("status_starting", season=_texto_temporada(season), year=year))
 
-        self._worker = WorkerEscaneoDiscrepancias(year, season)
+        self._worker = _WorkerEscaneo(orq.escanear_temporada, year, season)
         self._worker.progreso.connect(self._on_progreso)
         self._worker.terminado.connect(self._on_terminado)
         self._worker.error_fatal.connect(self._on_error_fatal)
@@ -942,14 +922,15 @@ class PestanaAnimesFaltantes(QWidget):
     """
     Pestaña de Animes Faltantes: detecta animes que MAL reporta para la
     temporada y que NO existen en absoluto en AnimeThemes. Mismo patrón
-    que PestanaDiscrepancias pero usando WorkerEscaneoFaltantes y
+    que PestanaDiscrepancias pero pasando
+    orq.detectar_animes_faltantes_en_at a _WorkerEscaneo y usando
     orq.ResultadoFaltantes (que tiene .faltantes y .errores).
     """
 
     def __init__(self):
         super().__init__()
         self._resultado_actual: orq.ResultadoFaltantes | None = None
-        self._worker: WorkerEscaneoFaltantes | None = None
+        self._worker: _WorkerEscaneo | None = None
         self._resultados_por_temporada: dict[tuple[int, str], tuple[datetime.datetime, orq.ResultadoFaltantes]] = {}
 
         layout = QVBoxLayout(self)
@@ -1116,7 +1097,7 @@ class PestanaAnimesFaltantes(QWidget):
         self.barra_progreso.setValue(0)
         self.label_estado.setText(i18n.t("status_starting", season=_texto_temporada(season), year=year))
 
-        self._worker = WorkerEscaneoFaltantes(year, season)
+        self._worker = _WorkerEscaneo(orq.detectar_animes_faltantes_en_at, year, season)
         self._worker.progreso.connect(self._on_progreso)
         self._worker.terminado.connect(self._on_terminado)
         self._worker.error_fatal.connect(self._on_error_fatal)
