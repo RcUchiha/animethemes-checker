@@ -698,6 +698,22 @@ class PestanaDiscrepancias(QWidget):
         self._mostrar_resultado(resultado)
         self._rehabilitar_controles()
 
+        # Canario de posible cambio de HTML en MAL (issue #3): se muestra
+        # aparte de _on_error_fatal (QMessageBox.warning, no critical) y
+        # después de pintar los resultados — no es un error de red ni
+        # bloquea nada, es una sospecha sobre la validez de lo que ya se
+        # mostró. Ver orq.ResultadoEscaneo.alerta_posible_cambio_html_mal.
+        if resultado.alerta_posible_cambio_html_mal:
+            QMessageBox.warning(
+                self,
+                i18n.t("dlg_canario_title"),
+                i18n.t(
+                    "dlg_canario_msg",
+                    vacios=resultado.total_finished_airing_con_temas_mal_vacios,
+                    evaluados=resultado.total_finished_airing_evaluados,
+                ),
+            )
+
     def _on_error_fatal(self, mensaje: str):
         self._rehabilitar_controles()
         self.label_estado.setText(i18n.t("status_error"))
