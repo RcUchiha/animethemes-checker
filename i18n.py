@@ -145,6 +145,25 @@ TEXTOS: dict[str, dict[str, str]] = {
                                  "en": "Open ranges in {type_a} (\"{range_a}\") and {type_b} (\"{range_b}\") — check if episode data needs completing"},
     "desc_missing_video":       {"es": "Entrada sin video: {entry} — revisar si falta subir",
                                  "en": "Entry without video: {entry} — check if upload is needed"},
+
+    # ---- alerta canario: posible cambio de HTML en MAL (issue #3) ----
+    # Deliberadamente distinta del diálogo de error de red
+    # (dlg_scan_error_title): esto NO es un error de conexión ni una lista
+    # de discrepancias reales — es una sospecha de que mal_scraper.py dejó
+    # de reconocer el HTML de MAL, así que el escaneo pudo haber terminado
+    # "limpio" sin serlo. Se muestra con QMessageBox.warning (no critical)
+    # en gui_pyqt6.py para diferenciarla visualmente también.
+    "dlg_canario_title":        {"es": "Posible cambio de estructura en MAL",
+                                 "en": "Possible MAL structure change"},
+    "dlg_canario_msg":          {"es": "{vacios} de {evaluados} animes terminados devolvieron 0 temas al "
+                                        "scrapear MAL en este escaneo. Esto no es un error de red: puede "
+                                        "indicar que MAL cambió el HTML de su página y mal_scraper.py dejó "
+                                        "de reconocerlo. Antes de confiar en este resultado, revisa manualmente "
+                                        "algún caso conocido.",
+                                 "en": "{vacios} of {evaluados} finished anime returned 0 themes when "
+                                        "scraping MAL in this scan. This is not a network error: it may mean "
+                                        "MAL changed its page HTML and mal_scraper.py stopped recognizing it. "
+                                        "Before trusting this result, manually check a known case."},
 }
 
 

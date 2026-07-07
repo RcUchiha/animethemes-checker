@@ -77,6 +77,18 @@ anime puntual como error y se sigue con el resto — incluso las llamadas
 "masivas" iniciales (listar la temporada completa) están envueltas en
 reintentos, ya que un fallo ahí antes tumbaba el escaneo entero sin
 producir ningún resultado parcial.
+
+Canario de posible cambio de HTML en MAL (issue #3): un fallo de RED es
+ruidoso (se ve arriba), pero un cambio en el MARKUP de la página de MAL
+no lo es — mal_scraper.py no lanza excepción si deja de reconocer la
+estructura, simplemente devuelve listas vacías (ver su "ADVERTENCIA DE
+FRAGILIDAD"), y comparador.py no puede detectar temas faltantes si el
+lado de MAL viene vacío. escanear_temporada agrega, sobre toda la
+temporada, cuántos animes "Finished Airing" devolvieron 0 temas de MAL;
+ResultadoEscaneo.alerta_posible_cambio_html_mal expone esa señal para
+que el llamador (gui_pyqt6.py) la muestre, sin abortar el escaneo ni
+tocar el parser. Ver _hay_alerta_canario_mal más abajo para el criterio
+exacto y por qué se eligió ese umbral.
 """
 
 from __future__ import annotations
@@ -124,6 +136,50 @@ def _con_reintentos(
     raise ultimo_error  # tipo: ignore[misc] — siempre habrá un ultimo_error si llegamos aquí
 
 
+# ---------- canario: posible cambio de HTML en MAL (issue #3) ----------
+# mal_scraper.py scrapea HTML, no una API versionada (ver su docstring,
+# sección "ADVERTENCIA DE FRAGILIDAD"). Si MAL cambia su markup, el parser
+# NO lanza ninguna excepción: html.parser sigue sin quejarse y
+# _ThemeSongsExtractor simplemente no encuentra nada, devolviendo una
+# lista de temas vacía. Sin esta señal, un escaneo así terminaría
+# "exitoso" pero mintiendo: la Regla A de comparador.py no puede detectar
+# temas faltantes si el lado de MAL viene vacío, así que el resultado se
+# vería como "0 discrepancias" en vez de un error visible.
+#
+# UMBRAL_FRACCION_VACIOS_CANARIO = 0.8: un anime puntual sin temas
+# documentados en MAL es normal (ocurre con specials/OVAs poco cubiertas),
+# así que un umbral bajo generaría falsas alarmas todo el tiempo. Un
+# cambio real de HTML rompe el parseo para prácticamente TODOS los animes
+# de la temporada a la vez, no para unos pocos — 80% deja margen para que
+# unos cuantos casos legítimamente vacíos no disparen la alerta, mientras
+# sigue siendo lo bastante bajo para no tapar una rotura real (que en la
+# práctica ronda el 100%).
+#
+# MINIMO_ANIMES_PARA_CANARIO = 5: con muestras chicas (ej. 1 de 1 vacío al
+# principio de una temporada reciente, con pocos animes aún terminados),
+# la fracción se dispara a 100% por pura casualidad estadística. 5 es un
+# piso arbitrario pero razonable: absorbe ese ruido sin retrasar la
+# detección de una rotura real, que en cualquier escaneo normal de una
+# temporada (decenas de animes) se vería de inmediato.
+UMBRAL_FRACCION_VACIOS_CANARIO = 0.8
+MINIMO_ANIMES_PARA_CANARIO = 5
+
+
+def _hay_alerta_canario_mal(total_evaluados: int, total_vacios: int) -> bool:
+    """
+    True si la fracción de animes "Finished Airing" que devolvieron 0
+    temas de MAL en este escaneo es sospechosamente alta — señal de que
+    mal_scraper.py pudo haber dejado de reconocer el HTML de MAL (ver el
+    comentario arriba de UMBRAL_FRACCION_VACIOS_CANARIO).
+
+    Es solo una señal para que el usuario la revise a mano: no aborta el
+    escaneo, no descarta resultados, no toca el parser en absoluto.
+    """
+    if total_evaluados < MINIMO_ANIMES_PARA_CANARIO:
+        return False
+    return (total_vacios / total_evaluados) >= UMBRAL_FRACCION_VACIOS_CANARIO
+
+
 @dataclass
 class ResultadoEscaneo:
     """Resultado completo de escanear una temporada."""
@@ -132,21 +188,43 @@ class ResultadoEscaneo:
     omitidos_no_terminados: list[str] = field(default_factory=list)    # nombres
     errores: list[tuple[str, str]] = field(default_factory=list)       # (nombre, mensaje)
 
+    # Para el canario de posible cambio de HTML en MAL (ver
+    # _hay_alerta_canario_mal arriba): cuenta solo animes "Finished
+    # Airing" para los que de verdad se intentó scrapear MAL (no cuenta
+    # omitidos por falta de mal_id o por no haber terminado, ni animes
+    # cuyo intento falló por un error de red, ya reflejado en 'errores').
+    total_finished_airing_evaluados: int = 0
+    total_finished_airing_con_temas_mal_vacios: int = 0
+
     @property
     def con_problemas(self) -> list[ResultadoAnime]:
         return [r for r in self.resultados if r.tiene_problemas]
 
+    @property
+    def alerta_posible_cambio_html_mal(self) -> bool:
+        return _hay_alerta_canario_mal(
+            self.total_finished_airing_evaluados,
+            self.total_finished_airing_con_temas_mal_vacios,
+        )
+
 
 def _procesar_un_anime(
     anime: ac.AnimeCompleto, estado_conocido: str | None = None
-) -> tuple[ResultadoAnime | None, str | None]:
+) -> tuple[ResultadoAnime | None, str | None, bool | None]:
     """
     Procesa un solo anime ya traído de AnimeThemes.
-    Devuelve (resultado, motivo_omision). Si resultado es None, el anime se
-    omitió y motivo_omision explica por qué (para clasificarlo en
-    ResultadoEscaneo). Si hay un error de red que persiste tras los
-    reintentos, se relanza para que el llamador lo capture y lo registre
-    en 'errores'.
+    Devuelve (resultado, motivo_omision, temas_mal_vacio). Si resultado es
+    None, el anime se omitió y motivo_omision explica por qué (para
+    clasificarlo en ResultadoEscaneo). Si hay un error de red que persiste
+    tras los reintentos, se relanza para que el llamador lo capture y lo
+    registre en 'errores'.
+
+    temas_mal_vacio es None si no llegamos a intentar scrapear MAL (sin
+    mal_id, o el anime no terminó de emitirse) — no aplica para el
+    canario de _hay_alerta_canario_mal. Si sí se confirmó "Finished
+    Airing" y se pidió la página de MAL, es True/False según si
+    pagina.temas vino vacío (ver escanear_temporada, que agrega este
+    valor sobre toda la temporada).
 
     estado_conocido: si se da (ver escanear_temporada), es el status del
     anime ("Finished Airing", etc.) ya resuelto desde el listado bulk de
@@ -170,13 +248,13 @@ def _procesar_un_anime(
     la dependencia de Jikan por completo para este caso.
     """
     if anime.mal_id is None:
-        return None, "sin_mal_id"
+        return None, "sin_mal_id", None
 
     if estado_conocido is not None:
         # Ya sabemos el status por el listado bulk; solo scrapeamos MAL
         # si de verdad terminó (si no, ni hace falta la descarga).
         if estado_conocido.strip().lower() != "finished airing":
-            return None, "no_terminado"
+            return None, "no_terminado", None
         pagina = _con_reintentos(
             lambda: ms.obtener_pagina_mal(anime.mal_id, anime_terminado=True, titulo=anime.name)
         )
@@ -189,7 +267,7 @@ def _procesar_un_anime(
         )
         status = pagina.status
         if status is None or status.strip().lower() != "finished airing":
-            return None, "no_terminado"
+            return None, "no_terminado", None
 
     temas_mal = pagina.temas
 
@@ -206,7 +284,7 @@ def _procesar_un_anime(
         status_mal=status,
         discrepancias=discrepancias,
     )
-    return resultado, None
+    return resultado, None, len(temas_mal) == 0
 
 
 @dataclass
@@ -416,7 +494,7 @@ def escanear_temporada(
     def _procesar_y_clasificar(anime: ac.AnimeCompleto) -> None:
         try:
             estado_conocido = estado_por_mal_id.get(anime.mal_id) if anime.mal_id is not None else None
-            resultado, motivo_omision = _procesar_un_anime(anime, estado_conocido=estado_conocido)
+            resultado, motivo_omision, temas_mal_vacio = _procesar_un_anime(anime, estado_conocido=estado_conocido)
         except (urllib.error.HTTPError, urllib.error.URLError) as e:
             with salida_lock:
                 salida.errores.append((anime.name, f"{e} (mal_id={anime.mal_id}, https://myanimelist.net/anime/{anime.mal_id})"))
@@ -428,6 +506,14 @@ def escanear_temporada(
                     salida.omitidos_sin_mal_id.append(anime.name)
                 elif motivo_omision == "no_terminado":
                     salida.omitidos_no_terminados.append(anime.name)
+
+                # Canario de posible cambio de HTML en MAL (issue #3): solo
+                # cuenta animes para los que de verdad se intentó scrapear
+                # MAL (temas_mal_vacio es None si se omitió antes de eso).
+                if temas_mal_vacio is not None:
+                    salida.total_finished_airing_evaluados += 1
+                    if temas_mal_vacio:
+                        salida.total_finished_airing_con_temas_mal_vacios += 1
 
         if progreso_callback is not None:
             with contador_lock:
