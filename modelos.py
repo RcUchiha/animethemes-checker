@@ -5,7 +5,7 @@ Estas estructuras son el "vocabulario" que comparten todos los módulos:
 - animethemes_client.py construye TemaAT a partir de la API de AnimeThemes.
 - mal_scraper.py construye TemaMAL a partir del HTML de MAL.
 - comparador.py recibe ambas listas y produce Discrepancia.
-- gui_tkinter.py solo lee Discrepancia para llenar la tabla.
+- gui_pyqt6.py solo lee Discrepancia para llenar la tabla.
 """
 
 from dataclasses import dataclass, field

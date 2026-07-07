@@ -1,15 +1,22 @@
 """
 GUI en PyQt6 para el AnimeThemes Checker, con tema oscuro.
 
-Este es el ESQUELETO inicial: ventana + estructura de pestañas + tema
-oscuro, sin lógica de escaneo todavía (se agrega en el siguiente paso).
+Ventana principal con selector de idioma y un QTabWidget con 2 pestañas,
+cada una con su propio panel de controles (año, temporada, escanear,
+exportar), barra de progreso y sub-pestañas de resultados:
+- "Discrepancias" (PestanaDiscrepancias): corre orq.escanear_temporada en
+  un hilo aparte (WorkerEscaneoDiscrepancias) y muestra las discrepancias
+  encontradas agrupadas por anime, más los omitidos/errores y la alerta
+  canario de posible cambio de HTML en MAL (ver orquestador.py, issue #3).
+- "Animes Faltantes" (PestanaAnimesFaltantes): corre
+  orq.detectar_animes_faltantes_en_at en un hilo aparte
+  (WorkerEscaneoFaltantes) y muestra los animes que MAL reporta y
+  AnimeThemes no tiene.
 
-Estructura (igual que la versión de Tkinter, pero con widgets de PyQt6):
-- QTabWidget principal con 2 pestañas:
-    1. "Discrepancias": tendrá su panel de controles + sub-pestañas
-       (Discrepancias / Omitidos-Errores).
-    2. "Animes Faltantes": tendrá su panel de controles + sub-pestañas
-       (Animes Faltantes / Errores).
+Ambas pestañas cachean resultados en memoria por (año, temporada) para no
+tener que re-escanear solo por cambiar el selector, exportan a CSV, y
+traducen todo su texto vía i18n.py (nunca hardcodeado acá, ver
+CONTRIBUTING.md).
 
 Requiere: pip install PyQt6
 """

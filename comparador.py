@@ -35,11 +35,6 @@ REGLA B — Posible hueco de cobertura (independiente de MAL):
     Esto NO exige que el rango llegue hasta el último episodio del anime
     (eso generaría falsos positivos: el último episodio puede no tener
     tema en absoluto).
-
-Aparte de A y B, se mantiene:
-REGLA C — Hueco de SECUENCIA dentro de AT (ej. existe OP1 y OP3, no OP2).
-    Esto es independiente de A/B y de MAL: solo mira la numeración interna
-    de AT.
 """
 
 from __future__ import annotations
@@ -283,9 +278,6 @@ def _detectar_posibles_huecos_de_cobertura(temas_at: list[TemaAT]) -> list[Discr
         tema_mal=None,
         tema_at=tema_ref,
     )]
-
-
-# ---------- Regla C: hueco de secuencia dentro de AT ----------
 
 
 # ---------- punto de entrada principal ----------
