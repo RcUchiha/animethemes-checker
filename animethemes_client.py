@@ -35,6 +35,7 @@ Notas de diseño:
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 import urllib.parse
@@ -118,8 +119,6 @@ def obtener_animes_de_temporada(year: int, season: str) -> list[AnimeBasico]:
         for item in items
     ]
 
-
-import re
 
 _SLUG_RE = re.compile(r"^(OP|ED)(\d+)([A-Za-z].*)?$")
 

@@ -356,6 +356,13 @@ def _extraer_status(html: str) -> "str | None":
     return None
 
 
+def _temas_desde_cache(lista_cacheada: list[dict]) -> list[TemaMAL]:
+    """Reconstruye una list[TemaMAL] a partir de la lista plana guardada en cache_jikan."""
+    return [TemaMAL(tipo=TipoTema(item["tipo"]), secuencia=item["secuencia"],
+                     titulo_cancion=item["titulo_cancion"], artista=item["artista"],
+                     episodios_texto=item["episodios_texto"]) for item in lista_cacheada]
+
+
 @dataclass
 class PaginaMAL:
     """Resultado de scrapear la página de un anime en MAL: temas Y status, en una sola descarga."""
@@ -385,9 +392,7 @@ def obtener_pagina_mal(mal_id: int, anime_terminado: bool = False, titulo: "str 
     if anime_terminado:
         cacheado = cache_jikan.obtener("pagina_mal", mal_id)
         if cacheado is not None:
-            temas = [TemaMAL(tipo=TipoTema(item["tipo"]), secuencia=item["secuencia"],
-                             titulo_cancion=item["titulo_cancion"], artista=item["artista"],
-                             episodios_texto=item["episodios_texto"]) for item in cacheado["temas"]]
+            temas = _temas_desde_cache(cacheado["temas"])
             return PaginaMAL(temas=temas, status=cacheado["status"])
 
     html = _descargar_html_con_throttle(mal_id, titulo)
@@ -425,9 +430,7 @@ def obtener_temas_mal(mal_id: int, anime_terminado: bool = False, titulo: "str |
     if anime_terminado:
         cacheado = cache_jikan.obtener("temas_mal", mal_id)
         if cacheado is not None:
-            return [TemaMAL(tipo=TipoTema(item["tipo"]), secuencia=item["secuencia"],
-                             titulo_cancion=item["titulo_cancion"], artista=item["artista"],
-                             episodios_texto=item["episodios_texto"]) for item in cacheado]
+            return _temas_desde_cache(cacheado)
 
     html = _descargar_html_con_throttle(mal_id, titulo)
     parser = _ThemeSongsExtractor()

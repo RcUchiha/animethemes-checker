@@ -42,6 +42,8 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
+import cache_jikan
+
 API_BASE = "https://api.jikan.moe/v4"
 HEADERS = {"User-Agent": "Mozilla/5.0 (AnimeThemesChecker/0.1)"}
 
@@ -78,9 +80,6 @@ def _get_json(url: str) -> dict:
     req = urllib.request.Request(url, headers=HEADERS)
     with urllib.request.urlopen(req, timeout=20) as resp:
         return json.loads(resp.read().decode("utf-8"))
-
-
-import cache_jikan
 
 
 def obtener_info_mal(mal_id: int) -> InfoMAL | None:
