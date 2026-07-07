@@ -434,38 +434,42 @@ QScrollBar::handle:vertical:hover {
 """
 
 
-class PestanaDiscrepancias(QWidget):
+class PestanaEscaneoBase(QWidget):
     """
-    Pestaña de Discrepancias: panel de controles (año, temporada dinámica,
-    filtro por tipo en combobox, botones), barra de progreso, y un
-    QTabWidget interno con 2 sub-pestañas (Discrepancias / Omitidos-Errores).
+    Base compartida por PestanaDiscrepancias y PestanaAnimesFaltantes:
+    ambas arman el mismo panel de controles (año, temporada dinámica,
+    botones Escanear/Exportar), delegan el escaneo a un _WorkerEscaneo en
+    un hilo aparte, y manejan igual el ciclo de vida de ese hilo
+    (progreso, error fatal, y el resultado guardado en caché en memoria
+    por (year, season) para no re-escanear solo por cambiar el selector).
+
+    Lo que difiere de verdad entre las dos pestañas (columnas de tabla,
+    qué columna dispara un link, textos i18n puntuales, la alerta de
+    canario) queda definido en cada subclase por separado — esta base NO
+    define _construir_barra_progreso, _construir_subpestanas,
+    _on_progreso, _on_terminado, _actualizar_textos, ni los métodos de
+    presentación de resultados/exportación.
+
+    _FUNCION_ESCANEO: atributo de clase que cada subclase DEBE
+    sobreescribir con un staticmethod de la función del orquestador a
+    correr en el hilo (ej. orq.escanear_temporada o
+    orq.detectar_animes_faltantes_en_at).
     """
+
+    _FUNCION_ESCANEO = None
 
     def __init__(self):
         super().__init__()
-        # Etiquetas amigables para el filtro (combobox en vez de
-        # checkboxes, a pedido del usuario). "Todos" no filtra nada.
-        # Vive en __init__ (atributo de instancia), no como atributo de
-        # clase: antes se calculaba una sola vez al cargar el módulo,
-        # con el idioma que estuviera activo en ESE momento — funcionaba
-        # porque solo existe una instancia real de esta clase, pero era
-        # confuso de mantener (¿por qué hay un OPCIONES_FILTRO de clase
-        # Y uno de instancia que lo tapa en _actualizar_textos?).
-        self.OPCIONES_FILTRO = {
-            i18n.t("filter_all"): None,
-            i18n.t("filter_tema_faltante"): "tema_faltante",
-            i18n.t("filter_rango_abierto"): "rango_abierto_sin_cerrar",
-            i18n.t("filter_video_faltante"): "video_faltante",
-        }
-        self._resultado_actual: orq.ResultadoEscaneo | None = None
-        self._filas_discrepancias: list[tuple[str, list[tuple[str, str]], str]] = []  # (nombre, [(tipo, desc)], url_at)
+        self._resultado_actual: orq.ResultadoEscaneo | orq.ResultadoFaltantes | None = None
         self._worker: _WorkerEscaneo | None = None
         # Caché en memoria de resultados ya escaneados en esta sesión, por
-        # (year, season) -> (datetime_en_que_se_guardo, ResultadoEscaneo).
-        # Permite volver a ver una temporada ya escaneada sin tener que
+        # (year, season) -> (datetime_en_que_se_guardo, resultado). Permite
+        # volver a ver una temporada ya escaneada sin tener que
         # re-escanear, simplemente cambiando el selector — el botón
         # "Escanear" sigue disponible para forzar una actualización fresca.
-        self._resultados_por_temporada: dict[tuple[int, str], tuple[datetime.datetime, orq.ResultadoEscaneo]] = {}
+        self._resultados_por_temporada: dict[
+            tuple[int, str], tuple[datetime.datetime, orq.ResultadoEscaneo | orq.ResultadoFaltantes]
+        ] = {}
 
         layout = QVBoxLayout(self)
         layout.addLayout(self._construir_panel_controles())
@@ -510,70 +514,6 @@ class PestanaDiscrepancias(QWidget):
         self._actualizar_temporadas_disponibles()  # llenar el combo inicial
 
         return fila
-
-    def _construir_barra_progreso(self) -> QWidget:
-        contenedor = QWidget()
-        layout = QVBoxLayout(contenedor)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        self.barra_progreso = QProgressBar()
-        self.barra_progreso.setRange(0, 1)
-        self.barra_progreso.setValue(0)
-        layout.addWidget(self.barra_progreso)
-
-        # "Filtrar por:" vive en esta misma fila, a la derecha del label
-        # de estado (a pedido del usuario — antes vivía en la esquina de
-        # las sub-pestañas, pero quedaba muy abajo y lejos del resto de
-        # los controles).
-        fila_estado = QHBoxLayout()
-        self.label_estado = QLabel(i18n.t("status_ready"))
-        fila_estado.addWidget(self.label_estado)
-        fila_estado.addStretch()
-
-        self.label_filtro = QLabel(i18n.t("filter_label"))
-        fila_estado.addWidget(self.label_filtro)
-        self.combo_filtro = QComboBox()
-        self.combo_filtro.addItems(self.OPCIONES_FILTRO.keys())
-        self.combo_filtro.currentTextChanged.connect(self._aplicar_filtro)
-        fila_estado.addWidget(self.combo_filtro)
-
-        layout.addLayout(fila_estado)
-
-        return contenedor
-
-    def _construir_subpestanas(self) -> QTabWidget:
-        sub = QTabWidget()
-        # Pestañas abajo, estilo hojas de Excel (a pedido del usuario).
-        sub.setTabPosition(QTabWidget.TabPosition.South)
-
-        # --- subpestaña: discrepancias ---
-        self.tabla_discrepancias = QTableWidget(0, 3)
-        self.tabla_discrepancias.setHorizontalHeaderLabels([i18n.t("col_anime"), i18n.t("col_tipo"), i18n.t("col_descripcion")])
-        self.tabla_discrepancias.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.tabla_discrepancias.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.tabla_discrepancias.setWordWrap(True)
-        header = self.tabla_discrepancias.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.tabla_discrepancias.setColumnWidth(0, 260)
-        self.tabla_discrepancias.setColumnWidth(1, 150)
-        self.tabla_discrepancias.cellClicked.connect(self._on_click_celda_discrepancias)
-        sub.addTab(self.tabla_discrepancias, i18n.t("subtab_discrepancias"))
-
-        # --- subpestaña: omitidos / errores ---
-        self.tabla_omitidos = QTableWidget(0, 2)
-        self.tabla_omitidos.setHorizontalHeaderLabels([i18n.t("col_anime"), i18n.t("col_motivo")])
-        self.tabla_omitidos.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.tabla_omitidos.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        header2 = self.tabla_omitidos.horizontalHeader()
-        header2.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        header2.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.tabla_omitidos.setColumnWidth(0, 300)
-        sub.addTab(self.tabla_omitidos, i18n.t("subtab_omitidos"))
-
-        self.sub_tabs = sub  # guardado para poder retraducir sus pestañas en _actualizar_textos
-        return sub
 
     def _actualizar_temporadas_disponibles(self):
         """
@@ -665,11 +605,123 @@ class PestanaDiscrepancias(QWidget):
         self.barra_progreso.setValue(0)
         self.label_estado.setText(i18n.t("status_starting", season=_texto_temporada(season), year=year))
 
-        self._worker = _WorkerEscaneo(orq.escanear_temporada, year, season)
+        self._worker = _WorkerEscaneo(self._FUNCION_ESCANEO, year, season)
         self._worker.progreso.connect(self._on_progreso)
         self._worker.terminado.connect(self._on_terminado)
         self._worker.error_fatal.connect(self._on_error_fatal)
         self._worker.start()
+
+    def _on_error_fatal(self, mensaje: str):
+        self._rehabilitar_controles()
+        self.label_estado.setText(i18n.t("status_error"))
+        QMessageBox.critical(self, i18n.t("dlg_scan_error_title"), mensaje)
+
+    def _rehabilitar_controles(self):
+        self.spin_year.setEnabled(True)
+        self.combo_season.setEnabled(True)
+        self.btn_escanear.setEnabled(True)
+        self.btn_exportar.setEnabled(True)
+
+
+class PestanaDiscrepancias(PestanaEscaneoBase):
+    """
+    Pestaña de Discrepancias: panel de controles (año, temporada dinámica,
+    filtro por tipo en combobox, botones), barra de progreso, y un
+    QTabWidget interno con 2 sub-pestañas (Discrepancias / Omitidos-Errores).
+    """
+
+    _FUNCION_ESCANEO = staticmethod(orq.escanear_temporada)
+
+    def __init__(self):
+        # Etiquetas amigables para el filtro (combobox en vez de
+        # checkboxes, a pedido del usuario). "Todos" no filtra nada.
+        # Vive en __init__ (atributo de instancia), no como atributo de
+        # clase: antes se calculaba una sola vez al cargar el módulo,
+        # con el idioma que estuviera activo en ESE momento — funcionaba
+        # porque solo existe una instancia real de esta clase, pero era
+        # confuso de mantener (¿por qué hay un OPCIONES_FILTRO de clase
+        # Y uno de instancia que lo tapa en _actualizar_textos?).
+        #
+        # Se define ANTES de super().__init__() porque
+        # PestanaEscaneoBase.__init__ ya llama a _construir_barra_progreso
+        # (que la necesita para armar el combo de filtro) como parte de la
+        # construcción compartida del layout.
+        self.OPCIONES_FILTRO = {
+            i18n.t("filter_all"): None,
+            i18n.t("filter_tema_faltante"): "tema_faltante",
+            i18n.t("filter_rango_abierto"): "rango_abierto_sin_cerrar",
+            i18n.t("filter_video_faltante"): "video_faltante",
+        }
+        self._filas_discrepancias: list[tuple[str, list[tuple[str, str]], str]] = []  # (nombre, [(tipo, desc)], url_at)
+        super().__init__()
+
+    # ---------- construcción de la UI ----------
+
+    def _construir_barra_progreso(self) -> QWidget:
+        contenedor = QWidget()
+        layout = QVBoxLayout(contenedor)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.barra_progreso = QProgressBar()
+        self.barra_progreso.setRange(0, 1)
+        self.barra_progreso.setValue(0)
+        layout.addWidget(self.barra_progreso)
+
+        # "Filtrar por:" vive en esta misma fila, a la derecha del label
+        # de estado (a pedido del usuario — antes vivía en la esquina de
+        # las sub-pestañas, pero quedaba muy abajo y lejos del resto de
+        # los controles).
+        fila_estado = QHBoxLayout()
+        self.label_estado = QLabel(i18n.t("status_ready"))
+        fila_estado.addWidget(self.label_estado)
+        fila_estado.addStretch()
+
+        self.label_filtro = QLabel(i18n.t("filter_label"))
+        fila_estado.addWidget(self.label_filtro)
+        self.combo_filtro = QComboBox()
+        self.combo_filtro.addItems(self.OPCIONES_FILTRO.keys())
+        self.combo_filtro.currentTextChanged.connect(self._aplicar_filtro)
+        fila_estado.addWidget(self.combo_filtro)
+
+        layout.addLayout(fila_estado)
+
+        return contenedor
+
+    def _construir_subpestanas(self) -> QTabWidget:
+        sub = QTabWidget()
+        # Pestañas abajo, estilo hojas de Excel (a pedido del usuario).
+        sub.setTabPosition(QTabWidget.TabPosition.South)
+
+        # --- subpestaña: discrepancias ---
+        self.tabla_discrepancias = QTableWidget(0, 3)
+        self.tabla_discrepancias.setHorizontalHeaderLabels([i18n.t("col_anime"), i18n.t("col_tipo"), i18n.t("col_descripcion")])
+        self.tabla_discrepancias.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.tabla_discrepancias.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.tabla_discrepancias.setWordWrap(True)
+        header = self.tabla_discrepancias.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.tabla_discrepancias.setColumnWidth(0, 260)
+        self.tabla_discrepancias.setColumnWidth(1, 150)
+        self.tabla_discrepancias.cellClicked.connect(self._on_click_celda_discrepancias)
+        sub.addTab(self.tabla_discrepancias, i18n.t("subtab_discrepancias"))
+
+        # --- subpestaña: omitidos / errores ---
+        self.tabla_omitidos = QTableWidget(0, 2)
+        self.tabla_omitidos.setHorizontalHeaderLabels([i18n.t("col_anime"), i18n.t("col_motivo")])
+        self.tabla_omitidos.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.tabla_omitidos.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        header2 = self.tabla_omitidos.horizontalHeader()
+        header2.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        header2.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.tabla_omitidos.setColumnWidth(0, 300)
+        sub.addTab(self.tabla_omitidos, i18n.t("subtab_omitidos"))
+
+        self.sub_tabs = sub  # guardado para poder retraducir sus pestañas en _actualizar_textos
+        return sub
+
+    # ---------- lógica de escaneo ----------
 
     def _on_progreso(self, indice: int, total: int, nombre_anime: str):
         self.barra_progreso.setMaximum(max(total, 1))
@@ -700,17 +752,6 @@ class PestanaDiscrepancias(QWidget):
                     evaluados=resultado.total_finished_airing_evaluados,
                 ),
             )
-
-    def _on_error_fatal(self, mensaje: str):
-        self._rehabilitar_controles()
-        self.label_estado.setText(i18n.t("status_error"))
-        QMessageBox.critical(self, i18n.t("dlg_scan_error_title"), mensaje)
-
-    def _rehabilitar_controles(self):
-        self.spin_year.setEnabled(True)
-        self.combo_season.setEnabled(True)
-        self.btn_escanear.setEnabled(True)
-        self.btn_exportar.setEnabled(True)
 
     def _actualizar_textos(self):
         """Re-renderiza todas las etiquetas traducibles cuando cambia el idioma."""
@@ -918,7 +959,7 @@ class PestanaDiscrepancias(QWidget):
         QMessageBox.information(self, i18n.t("dlg_exported_title"), i18n.t("dlg_exported_msg", path=ruta))
 
 
-class PestanaAnimesFaltantes(QWidget):
+class PestanaAnimesFaltantes(PestanaEscaneoBase):
     """
     Pestaña de Animes Faltantes: detecta animes que MAL reporta para la
     temporada y que NO existen en absoluto en AnimeThemes. Mismo patrón
@@ -927,55 +968,9 @@ class PestanaAnimesFaltantes(QWidget):
     orq.ResultadoFaltantes (que tiene .faltantes y .errores).
     """
 
-    def __init__(self):
-        super().__init__()
-        self._resultado_actual: orq.ResultadoFaltantes | None = None
-        self._worker: _WorkerEscaneo | None = None
-        self._resultados_por_temporada: dict[tuple[int, str], tuple[datetime.datetime, orq.ResultadoFaltantes]] = {}
-
-        layout = QVBoxLayout(self)
-        layout.addLayout(self._construir_panel_controles())
-        layout.addWidget(self._construir_barra_progreso())
-        layout.addWidget(self._construir_subpestanas())
+    _FUNCION_ESCANEO = staticmethod(orq.detectar_animes_faltantes_en_at)
 
     # ---------- construcción de la UI ----------
-
-    def _construir_panel_controles(self) -> QHBoxLayout:
-        fila = QHBoxLayout()
-
-        self.label_anio = QLabel(i18n.t("year_label"))
-        fila.addWidget(self.label_anio)
-        self.spin_year = QSpinBox()
-        self.spin_year.setRange(1960, datetime.date.today().year)
-        self.spin_year.setValue(datetime.date.today().year)
-        self.spin_year.valueChanged.connect(self._actualizar_temporadas_disponibles)
-        fila.addWidget(self.spin_year)
-
-        self.label_temporada = QLabel(i18n.t("season_label"))
-        fila.addWidget(self.label_temporada)
-        self.combo_season = QComboBox()
-        # Conectado por índice, no por texto: el texto mostrado cambia de
-        # idioma, pero el valor real que nos interesa (userData, en
-        # inglés) no. Ver _poblar_combo_temporadas.
-        self.combo_season.currentIndexChanged.connect(
-            lambda _i: self._on_cambio_temporada_seleccionada(self.combo_season.currentData())
-        )
-        fila.addWidget(self.combo_season)
-
-        self.btn_escanear = QPushButton(i18n.t("scan_button"))
-        self.btn_escanear.clicked.connect(self._iniciar_escaneo)
-        fila.addWidget(self.btn_escanear)
-
-        fila.addStretch()
-
-        self.btn_exportar = QPushButton(i18n.t("export_button"))
-        self.btn_exportar.setEnabled(False)
-        self.btn_exportar.clicked.connect(self._exportar_csv)
-        fila.addWidget(self.btn_exportar)
-
-        self._actualizar_temporadas_disponibles()
-
-        return fila
 
     def _construir_barra_progreso(self) -> QWidget:
         contenedor = QWidget()
@@ -1033,75 +1028,7 @@ class PestanaAnimesFaltantes(QWidget):
         self.sub_tabs = sub  # guardado para poder retraducir sus pestañas en _actualizar_textos
         return sub
 
-    def _actualizar_temporadas_disponibles(self):
-        seleccion_previa = self.combo_season.currentData()
-        temporadas = _temporadas_disponibles(self.spin_year.value())
-
-        hay_temporadas = _poblar_combo_temporadas(
-            self.combo_season, temporadas, seleccion_previa, self.spin_year.value()
-        )
-
-        self.combo_season.setEnabled(hay_temporadas)
-        if hasattr(self, "btn_escanear"):
-            self.btn_escanear.setEnabled(hay_temporadas)
-        if hasattr(self, "label_estado"):
-            if not hay_temporadas:
-                self.label_estado.setText(
-                    i18n.t("status_no_seasons")
-                )
-            else:
-                self.label_estado.setText(i18n.t("status_ready"))
-
-    def _on_cambio_temporada_seleccionada(self, season: str):
-        """Ver docstring de la misma función en PestanaDiscrepancias: comportamiento idéntico."""
-        if not season or (self._worker is not None and self._worker.isRunning()):
-            return
-
-        year = self.spin_year.value()
-        clave = (year, season)
-        entrada = self._resultados_por_temporada.get(clave)
-        if entrada is None:
-            self._limpiar_resultados()
-            self._resultado_actual = None
-            self.btn_exportar.setEnabled(False)
-            self.label_estado.setText(i18n.t("status_ready"))
-            return
-
-        momento_guardado, resultado = entrada
-        self._resultado_actual = resultado
-        self._mostrar_resultado(resultado)
-
-        segundos = (datetime.datetime.now() - momento_guardado).total_seconds()
-        antiguedad = _formatear_antiguedad(segundos)
-        self.label_estado.setText(
-            i18n.t("status_cached", age=antiguedad)
-        )
-
     # ---------- lógica de escaneo ----------
-
-    def _iniciar_escaneo(self):
-        if self._worker is not None and self._worker.isRunning():
-            return
-
-        year = self.spin_year.value()
-        season = self.combo_season.currentData()  # valor interno en inglés, para la API
-        if not season:
-            return
-
-        self._limpiar_resultados()
-        self.spin_year.setEnabled(False)
-        self.combo_season.setEnabled(False)
-        self.btn_escanear.setEnabled(False)
-        self.btn_exportar.setEnabled(False)
-        self.barra_progreso.setMaximum(1)
-        self.barra_progreso.setValue(0)
-        self.label_estado.setText(i18n.t("status_starting", season=_texto_temporada(season), year=year))
-
-        self._worker = _WorkerEscaneo(orq.detectar_animes_faltantes_en_at, year, season)
-        self._worker.progreso.connect(self._on_progreso)
-        self._worker.terminado.connect(self._on_terminado)
-        self._worker.error_fatal.connect(self._on_error_fatal)
-        self._worker.start()
 
     def _on_progreso(self, indice: int, total: int, nombre_anime: str):
         self.barra_progreso.setMaximum(max(total, 1))
@@ -1116,17 +1043,6 @@ class PestanaAnimesFaltantes(QWidget):
         self._resultado_actual = resultado
         self._mostrar_resultado(resultado)
         self._rehabilitar_controles()
-
-    def _on_error_fatal(self, mensaje: str):
-        self._rehabilitar_controles()
-        self.label_estado.setText(i18n.t("status_error"))
-        QMessageBox.critical(self, i18n.t("dlg_scan_error_title"), mensaje)
-
-    def _rehabilitar_controles(self):
-        self.spin_year.setEnabled(True)
-        self.combo_season.setEnabled(True)
-        self.btn_escanear.setEnabled(True)
-        self.btn_exportar.setEnabled(True)
 
     def _actualizar_textos(self):
         """Re-renderiza todas las etiquetas traducibles cuando cambia el idioma."""
