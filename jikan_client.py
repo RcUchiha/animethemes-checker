@@ -179,6 +179,13 @@ def obtener_temporada_completa_mal(
     'status' de un anime particular dentro de la lista, pero esa
     verificación definitiva ya la hace por separado obtener_info_mal, que
     tiene su propia protección contra cachear estados aún no definitivos).
+
+    Cada página respeta _esperar_turno() (el throttle global de
+    PAUSA_ENTRE_LLAMADAS, ver docstring del módulo) además de
+    pausa_entre_paginas: esta última es un espaciado propio de esta función
+    entre páginas consecutivas, pero no protegía por sí sola contra el
+    ritmo agregado de llamadas de otros hilos golpeando Jikan al mismo
+    tiempo (ej. vía obtener_info_mal en paralelo).
     """
     season = season.lower()
     clave_cache = f"{year}_{season}"
@@ -192,6 +199,7 @@ def obtener_temporada_completa_mal(
 
     while True:
         url = f"{API_BASE}/seasons/{year}/{season}?page={pagina}"
+        _esperar_turno()
         data = _get_json(url)
 
         for item in data.get("data", []):

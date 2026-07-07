@@ -182,6 +182,7 @@ class TestObtenerTemporadaCompletaMal:
         }
         with patch("jikan_client.cache_jikan.obtener", return_value=None), \
              patch("jikan_client._get_json", side_effect=[pagina_1, pagina_2]) as mock_get, \
+             patch("jikan_client._esperar_turno") as mock_esperar_turno, \
              patch("jikan_client.time.sleep") as mock_sleep, \
              patch("jikan_client.cache_jikan.guardar"):
             resultado = jc.obtener_temporada_completa_mal(2026, "spring", pausa_entre_paginas=1.0)
@@ -191,4 +192,7 @@ class TestObtenerTemporadaCompletaMal:
         urls_llamadas = [call.args[0] for call in mock_get.call_args_list]
         assert "page=1" in urls_llamadas[0]
         assert "page=2" in urls_llamadas[1]
+        # el throttle global debe respetarse en cada página, además de la
+        # pausa propia de esta función entre páginas (ver docstring).
+        assert mock_esperar_turno.call_count == 2
         mock_sleep.assert_called_once_with(1.0)
