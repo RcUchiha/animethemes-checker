@@ -33,6 +33,13 @@ from dataclasses import asdict, is_dataclass
 
 DIAS_EXPIRACION = 15
 
+# Única fuente de verdad para las secciones válidas del caché — usada tanto
+# al cargar el archivo (para inicializar secciones ausentes) como al limpiar
+# expirados. Antes estaba duplicada en ambos lugares, y "pagina_mal" (usada
+# por mal_scraper.obtener_pagina_mal) faltaba en limpiar_expirados(): sus
+# entradas nunca se revisaban ni se eliminaban aunque vencieran.
+SECCIONES_CONOCIDAS = ("info_mal", "temporada_completa_mal", "temas_mal", "pagina_mal")
+
 _RUTA_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache_jikan.json")
 
 _lock = threading.Lock()  # el caché se lee/escribe desde varios hilos (ThreadPoolExecutor)
@@ -40,15 +47,15 @@ _lock = threading.Lock()  # el caché se lee/escribe desde varios hilos (ThreadP
 
 def _cargar_archivo() -> dict:
     if not os.path.exists(_RUTA_CACHE):
-        return {"info_mal": {}, "temporada_completa_mal": {}, "temas_mal": {}}
+        return {seccion: {} for seccion in SECCIONES_CONOCIDAS}
     try:
         with open(_RUTA_CACHE, "r", encoding="utf-8") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError):
         # archivo corrupto o ilegible: empezamos de cero en vez de tronar
-        return {"info_mal": {}, "temporada_completa_mal": {}, "temas_mal": {}}
+        return {seccion: {} for seccion in SECCIONES_CONOCIDAS}
 
-    for clave in ("info_mal", "temporada_completa_mal", "temas_mal"):
+    for clave in SECCIONES_CONOCIDAS:
         data.setdefault(clave, {})
     return data
 
@@ -118,7 +125,7 @@ def limpiar_expirados() -> int:
     eliminadas = 0
     with _lock:
         data = _cargar_archivo()
-        for seccion in ("info_mal", "temporada_completa_mal", "temas_mal"):
+        for seccion in SECCIONES_CONOCIDAS:
             claves_vencidas = [
                 clave for clave, entrada in data.get(seccion, {}).items()
                 if not _esta_vigente(entrada.get("fecha", ""))
