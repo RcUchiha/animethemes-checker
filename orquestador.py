@@ -133,7 +133,7 @@ def _con_reintentos(
             ultimo_error = e
             if intento < intentos:
                 time.sleep(pausa)
-    raise ultimo_error  # tipo: ignore[misc] — siempre habrá un ultimo_error si llegamos aquí
+    raise ultimo_error  # type: ignore[misc] — siempre habrá un ultimo_error si llegamos aquí
 
 
 # ---------- canario: posible cambio de HTML en MAL (issue #3) ----------
