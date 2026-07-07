@@ -1061,6 +1061,8 @@ class PestanaAnimesFaltantes(QWidget):
                 self.label_estado.setText(
                     i18n.t("status_no_seasons")
                 )
+            else:
+                self.label_estado.setText(i18n.t("status_ready"))
 
     def _on_cambio_temporada_seleccionada(self, season: str):
         """Ver docstring de la misma función en PestanaDiscrepancias: comportamiento idéntico."""
