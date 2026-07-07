@@ -19,6 +19,17 @@ Notas de diseño:
   puntual), NECESITA_DETALLE_INDIVIDUAL=True reactiva el camino de respaldo:
   una llamada a /anime/{slug}?include=... por anime. Es más lento pero no
   depende de que el listado anide todo correctamente.
+  Verificado (issue #2, corrida real, Winter 2025, 55/55 animes,
+  06/07/2026): con NECESITA_DETALLE_INDIVIDUAL=True y =False contra la
+  misma temporada, ambos caminos devolvieron exactamente el mismo
+  conjunto de animes (mismos slugs), mismo mal_id por anime, y los mismos
+  temas OP/ED (tipo, secuencia, título, artista, episodios y video) en
+  cada uno — comparando por contenido ordenado por slug, no por posición,
+  ya que el camino de respaldo no garantiza el mismo orden. El camino de
+  respaldo sigue funcionando igual que el rápido, solo que ~2x más lento
+  (21.4s vs. 9.7s para esas 55 llamadas): no hay evidencia de que se haya
+  desactualizado, así que se mantiene tal cual, como red de respaldo real
+  y no solo teórica.
 """
 
 from __future__ import annotations
