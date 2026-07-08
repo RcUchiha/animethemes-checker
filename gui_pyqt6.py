@@ -454,9 +454,20 @@ class PestanaEscaneoBase(QWidget):
     sobreescribir con un staticmethod de la función del orquestador a
     correr en el hilo (ej. orq.escanear_temporada o
     orq.detectar_animes_faltantes_en_at).
+
+    _CLAVE_I18N_PROGRESO: atributo de clase que cada subclase DEBE
+    sobreescribir con la clave i18n del mensaje de progreso (ej.
+    "status_scanning" o "status_verifying").
+
+    _on_terminado hace acá lo que es común a ambas pestañas (guardar el
+    resultado en caché, mostrarlo, rehabilitar controles);
+    PestanaDiscrepancias la sobreescribe llamando primero a
+    super()._on_terminado(resultado) y agregando después la alerta de
+    canario, que no aplica a PestanaAnimesFaltantes.
     """
 
     _FUNCION_ESCANEO = None
+    _CLAVE_I18N_PROGRESO = None
 
     def __init__(self):
         super().__init__()
@@ -611,6 +622,20 @@ class PestanaEscaneoBase(QWidget):
         self._worker.error_fatal.connect(self._on_error_fatal)
         self._worker.start()
 
+    def _on_progreso(self, indice: int, total: int, nombre_anime: str):
+        self.barra_progreso.setMaximum(max(total, 1))
+        self.barra_progreso.setValue(indice)
+        self.label_estado.setText(i18n.t(self._CLAVE_I18N_PROGRESO, i=indice, total=total, name=nombre_anime))
+
+    def _on_terminado(self, resultado: orq.ResultadoEscaneo | orq.ResultadoFaltantes):
+        if self._worker is not None:
+            clave = (self._worker.year, self._worker.season)
+            self._resultados_por_temporada[clave] = (datetime.datetime.now(), resultado)
+
+        self._resultado_actual = resultado
+        self._mostrar_resultado(resultado)
+        self._rehabilitar_controles()
+
     def _on_error_fatal(self, mensaje: str):
         self._rehabilitar_controles()
         self.label_estado.setText(i18n.t("status_error"))
@@ -631,6 +656,7 @@ class PestanaDiscrepancias(PestanaEscaneoBase):
     """
 
     _FUNCION_ESCANEO = staticmethod(orq.escanear_temporada)
+    _CLAVE_I18N_PROGRESO = "status_scanning"
 
     def __init__(self):
         # Etiquetas amigables para el filtro (combobox en vez de
@@ -723,19 +749,8 @@ class PestanaDiscrepancias(PestanaEscaneoBase):
 
     # ---------- lógica de escaneo ----------
 
-    def _on_progreso(self, indice: int, total: int, nombre_anime: str):
-        self.barra_progreso.setMaximum(max(total, 1))
-        self.barra_progreso.setValue(indice)
-        self.label_estado.setText(i18n.t("status_scanning", i=indice, total=total, name=nombre_anime))
-
     def _on_terminado(self, resultado: orq.ResultadoEscaneo):
-        if self._worker is not None:
-            clave = (self._worker.year, self._worker.season)
-            self._resultados_por_temporada[clave] = (datetime.datetime.now(), resultado)
-
-        self._resultado_actual = resultado
-        self._mostrar_resultado(resultado)
-        self._rehabilitar_controles()
+        super()._on_terminado(resultado)
 
         # Canario de posible cambio de HTML en MAL (issue #3): se muestra
         # aparte de _on_error_fatal (QMessageBox.warning, no critical) y
@@ -969,6 +984,7 @@ class PestanaAnimesFaltantes(PestanaEscaneoBase):
     """
 
     _FUNCION_ESCANEO = staticmethod(orq.detectar_animes_faltantes_en_at)
+    _CLAVE_I18N_PROGRESO = "status_verifying"
 
     # ---------- construcción de la UI ----------
 
@@ -1027,22 +1043,6 @@ class PestanaAnimesFaltantes(PestanaEscaneoBase):
 
         self.sub_tabs = sub  # guardado para poder retraducir sus pestañas en _actualizar_textos
         return sub
-
-    # ---------- lógica de escaneo ----------
-
-    def _on_progreso(self, indice: int, total: int, nombre_anime: str):
-        self.barra_progreso.setMaximum(max(total, 1))
-        self.barra_progreso.setValue(indice)
-        self.label_estado.setText(i18n.t("status_verifying", i=indice, total=total, name=nombre_anime))
-
-    def _on_terminado(self, resultado: orq.ResultadoFaltantes):
-        if self._worker is not None:
-            clave = (self._worker.year, self._worker.season)
-            self._resultados_por_temporada[clave] = (datetime.datetime.now(), resultado)
-
-        self._resultado_actual = resultado
-        self._mostrar_resultado(resultado)
-        self._rehabilitar_controles()
 
     def _actualizar_textos(self):
         """Re-renderiza todas las etiquetas traducibles cuando cambia el idioma."""
