@@ -2,8 +2,9 @@
 Tests unitarios de orquestador.py: la alerta canario de posible cambio de
 HTML en MAL (issue #3), el manejo de errores de red de _con_reintentos, el
 mensaje de error traducido de detectar_animes_faltantes_en_at, y su
-fallback a caché vencido cuando el listado bulk de MAL/Jikan sigue
-fallando tras agotar reintentos.
+cascada de resiliencia de 3 capas para el listado bulk de MAL/Jikan
+(Jikan en vivo -> caché vencido -> AniList) cuando la fuente en vivo
+sigue fallando tras agotar reintentos.
 
 mal_scraper.py no lanza ninguna excepción si deja de reconocer el HTML de
 MAL (ver su "ADVERTENCIA DE FRAGILIDAD"): simplemente devuelve una lista de
@@ -229,14 +230,18 @@ class TestDetectarAnimesFaltantesEnAtErrorListadoMal:
     error de la GUI.
 
     Estos tests mockean obtener_temporada_completa_mal_desde_cache_vencido
-    con return_value=None (nunca se cacheó esta temporada) para aislar el
-    camino "sin nada que servir" del camino con fallback.
+    con return_value=None (nunca se cacheó esta temporada) Y
+    al.obtener_temporada_completa_anilist con un fallo también, para
+    aislar el camino "sin NINGÚN respaldo disponible" del camino con
+    fallback exitoso (ver TestDetectarAnimesFaltantesEnAtFallbackCacheVencido
+    más abajo para los casos donde algún fallback sí responde).
     """
 
     def test_httperror_persistente_se_traduce_a_error_amigable(self):
         error_original = urllib.error.HTTPError("http://x", 504, "Gateway Time-out", None, None)
         with patch("orquestador.jc.obtener_temporada_completa_mal", side_effect=error_original), \
              patch("orquestador.jc.obtener_temporada_completa_mal_desde_cache_vencido", return_value=None), \
+             patch("orquestador.al.obtener_temporada_completa_anilist", side_effect=urllib.error.URLError("timed out")), \
              patch("orquestador.time.sleep"):
             with pytest.raises(orq.ErrorListadoMALNoDisponible) as exc_info:
                 orq.detectar_animes_faltantes_en_at(2026, "winter")
@@ -251,6 +256,7 @@ class TestDetectarAnimesFaltantesEnAtErrorListadoMal:
         error_original = http.client.RemoteDisconnected("Remote end closed connection without response")
         with patch("orquestador.jc.obtener_temporada_completa_mal", side_effect=error_original), \
              patch("orquestador.jc.obtener_temporada_completa_mal_desde_cache_vencido", return_value=None), \
+             patch("orquestador.al.obtener_temporada_completa_anilist", side_effect=urllib.error.URLError("timed out")), \
              patch("orquestador.time.sleep"):
             with pytest.raises(orq.ErrorListadoMALNoDisponible) as exc_info:
                 orq.detectar_animes_faltantes_en_at(2026, "winter")
@@ -262,30 +268,35 @@ class TestDetectarAnimesFaltantesEnAtErrorListadoMal:
     def test_exito_tras_reintentar_no_lanza_nada(self):
         # No-regresión: si el bulk se recupera dentro de los 5 intentos,
         # detectar_animes_faltantes_en_at sigue de largo con normalidad,
-        # sin llegar siquiera a considerar el fallback de caché vencido.
+        # sin llegar siquiera a considerar ningún fallback.
         error = urllib.error.HTTPError("http://x", 504, "Gateway Time-out", None, None)
         with patch("orquestador.jc.obtener_temporada_completa_mal", side_effect=[error, []]), \
              patch("orquestador.jc.obtener_temporada_completa_mal_desde_cache_vencido") as mock_fallback, \
+             patch("orquestador.al.obtener_temporada_completa_anilist") as mock_anilist, \
              patch("orquestador.ac.obtener_animes_completos_de_temporada", return_value=[]), \
              patch("orquestador.time.sleep"):
             resultado = orq.detectar_animes_faltantes_en_at(2026, "winter")
 
         assert resultado == orq.ResultadoFaltantes()
         mock_fallback.assert_not_called()
+        mock_anilist.assert_not_called()
 
 
 # ---------- detectar_animes_faltantes_en_at: fallback a caché vencido ----------
 
 class TestDetectarAnimesFaltantesEnAtFallbackCacheVencido:
     """
-    Si el listado bulk en vivo agota reintentos pero SÍ hay una entrada
-    cacheada para esa (year, season) -- aunque haya vencido sus 15 días --
-    se usa como último recurso en vez de fallar, y ResultadoFaltantes
-    queda marcado para que gui_pyqt6.py avise al usuario. Ver
-    jikan_client.obtener_temporada_completa_mal_desde_cache_vencido.
+    Cascada de 3 capas cuando el listado bulk de MAL/Jikan en vivo agota
+    reintentos: (1) caché vencido de Jikan si existe, (2) AniList si no
+    hay NADA cacheado, (3) ErrorListadoMALNoDisponible si ninguna de las
+    dos anteriores tiene algo que ofrecer. El caché vencido tiene
+    prioridad sobre AniList (misma fuente, solo más vieja) -- estos tests
+    confirman ese orden explícitamente, no solo que "algún" fallback
+    funcione. Ver jikan_client.obtener_temporada_completa_mal_desde_cache_vencido
+    y anilist_client.obtener_temporada_completa_anilist.
     """
 
-    def test_fallback_exitoso_usa_cache_vencido_y_marca_los_campos(self):
+    def test_fallback_a_cache_vencido_usa_esa_fuente_y_marca_los_campos(self):
         error = urllib.error.HTTPError("http://x", 504, "Gateway Time-out", None, None)
         animes_cacheados = [
             jc.AnimeDeTemporadaMAL(mal_id=1, titulo="Anime Cacheado", status="Finished Airing", tipo="TV"),
@@ -293,6 +304,7 @@ class TestDetectarAnimesFaltantesEnAtFallbackCacheVencido:
         with patch("orquestador.jc.obtener_temporada_completa_mal", side_effect=error), \
              patch("orquestador.jc.obtener_temporada_completa_mal_desde_cache_vencido",
                    return_value=(animes_cacheados, 23)), \
+             patch("orquestador.al.obtener_temporada_completa_anilist") as mock_anilist, \
              patch("orquestador.ac.obtener_animes_completos_de_temporada", return_value=[]), \
              patch("orquestador.ms.obtener_temas_mal", return_value=[]), \
              patch("orquestador.time.sleep"):
@@ -301,29 +313,61 @@ class TestDetectarAnimesFaltantesEnAtFallbackCacheVencido:
         # No se lanzó ErrorListadoMALNoDisponible: el escaneo siguió de largo.
         assert resultado.datos_de_temporada_desde_cache_vencido is True
         assert resultado.antiguedad_cache_dias == 23
+        # AniList NI SIQUIERA se llama: el caché vencido tiene prioridad
+        # (misma fuente, solo más vieja) sobre la fuente distinta.
+        mock_anilist.assert_not_called()
+        assert resultado.usando_anilist_como_fuente is False
+        assert resultado.animes_omitidos_por_fuente_alterna == 0
 
-    def test_sin_cache_alguno_sigue_lanzando_error_como_antes(self):
-        # No-regresión explícita: si obtener_temporada_completa_mal_desde_cache_vencido
-        # devuelve None (nunca se cacheó), el comportamiento es EXACTAMENTE
-        # el de antes de este fallback -- ErrorListadoMALNoDisponible.
+    def test_sin_cache_vencido_cae_a_anilist_y_marca_los_campos(self):
         error = urllib.error.HTTPError("http://x", 504, "Gateway Time-out", None, None)
+        animes_anilist = [
+            jc.AnimeDeTemporadaMAL(mal_id=2, titulo="Anime de AniList", status="Currently Airing", tipo="TV"),
+        ]
         with patch("orquestador.jc.obtener_temporada_completa_mal", side_effect=error), \
              patch("orquestador.jc.obtener_temporada_completa_mal_desde_cache_vencido", return_value=None), \
+             patch("orquestador.al.obtener_temporada_completa_anilist",
+                   return_value=(animes_anilist, 7)) as mock_anilist, \
+             patch("orquestador.ac.obtener_animes_completos_de_temporada", return_value=[]), \
+             patch("orquestador.ms.obtener_temas_mal", return_value=[]), \
              patch("orquestador.time.sleep"):
-            with pytest.raises(orq.ErrorListadoMALNoDisponible):
+            resultado = orq.detectar_animes_faltantes_en_at(2026, "winter")
+
+        mock_anilist.assert_called_once_with(2026, "winter")
+        assert resultado.usando_anilist_como_fuente is True
+        assert resultado.animes_omitidos_por_fuente_alterna == 7
+        # Mutuamente excluyente con el caché vencido: quedan en default.
+        assert resultado.datos_de_temporada_desde_cache_vencido is False
+        assert resultado.antiguedad_cache_dias is None
+
+    def test_sin_ningun_respaldo_disponible_sigue_lanzando_error_como_antes(self):
+        # No-regresión: si ni el caché vencido ni AniList tienen nada que
+        # ofrecer, el comportamiento es EXACTAMENTE el de antes de esta
+        # cascada -- ErrorListadoMALNoDisponible con la excepción de
+        # Jikan encadenada.
+        error_jikan = urllib.error.HTTPError("http://x", 504, "Gateway Time-out", None, None)
+        error_anilist = urllib.error.URLError("timed out")
+        with patch("orquestador.jc.obtener_temporada_completa_mal", side_effect=error_jikan), \
+             patch("orquestador.jc.obtener_temporada_completa_mal_desde_cache_vencido", return_value=None), \
+             patch("orquestador.al.obtener_temporada_completa_anilist", side_effect=error_anilist), \
+             patch("orquestador.time.sleep"):
+            with pytest.raises(orq.ErrorListadoMALNoDisponible) as exc_info:
                 orq.detectar_animes_faltantes_en_at(2026, "winter")
 
+        assert exc_info.value.__cause__ is error_jikan
+
     def test_caso_normal_sin_fallback_deja_los_campos_en_default(self):
-        # Caso feliz: Jikan responde bien, no se llega a considerar el
-        # fallback en absoluto.
+        # Caso feliz: Jikan responde bien, no se llega a considerar
+        # ningún fallback en absoluto.
         with patch("orquestador.jc.obtener_temporada_completa_mal", return_value=[]), \
-             patch("orquestador.jc.obtener_temporada_completa_mal_desde_cache_vencido") as mock_fallback, \
+             patch("orquestador.jc.obtener_temporada_completa_mal_desde_cache_vencido") as mock_cache, \
+             patch("orquestador.al.obtener_temporada_completa_anilist") as mock_anilist, \
              patch("orquestador.ac.obtener_animes_completos_de_temporada", return_value=[]):
             resultado = orq.detectar_animes_faltantes_en_at(2026, "winter")
 
-        assert resultado.datos_de_temporada_desde_cache_vencido is False
-        assert resultado.antiguedad_cache_dias is None
-        mock_fallback.assert_not_called()
+        assert resultado == orq.ResultadoFaltantes()
+        mock_cache.assert_not_called()
+        mock_anilist.assert_not_called()
 
 
 # ---------- escanear_temporada: no-regresión del fallback al bulk de Jikan ----------

@@ -154,6 +154,26 @@ TEXTOS: dict[str, dict[str, str]] = {
                                        "a saved result from {dias} days ago. New anime or recent MAL changes "
                                        "might not be reflected yet. Try scanning again later to refresh."},
 
+    # ---- aviso: datos de temporada servidos desde AniList (último recurso) ----
+    # Mismo criterio visual que dlg_cache_vencido (QMessageBox.warning, no
+    # critical), pero es un aviso DISTINTO y más fuerte: acá no es "el
+    # mismo dato, más viejo" — es una fuente externa distinta, con su
+    # propio riesgo de mapeo (ver anilist_client.py y el docstring de
+    # orq.detectar_animes_faltantes_en_at). Solo se muestra cuando ni
+    # Jikan en vivo ni ningún caché (ni vencido) tenían nada que ofrecer.
+    "dlg_anilist_title": {"es": "Usando AniList como respaldo",
+                           "en": "Using AniList as a fallback"},
+    "dlg_anilist_msg":   {"es": "MAL (vía Jikan) no respondió y no había ningún resultado guardado de esta "
+                                 "temporada para usar como respaldo, así que se usó AniList como última opción. "
+                                 "{n} animes se omitieron por no tener vínculo a MAL cargado en AniList. Este "
+                                 "resultado depende de una fuente distinta a MAL y puede tener imprecisiones — "
+                                 "probá escanear de nuevo más tarde para confirmarlo contra MAL directamente.",
+                           "en": "MAL (via Jikan) did not respond and there was no saved result for this season "
+                                 "to fall back on, so AniList was used as a last resort. {n} anime were skipped "
+                                 "for not having a MAL link in AniList. This result relies on a different source "
+                                 "than MAL and may be imprecise — try scanning again later to confirm against "
+                                 "MAL directly."},
+
     # ---- nombres de estaciones ----
     # NOTA: estos son solo para mostrar en la UI. El valor interno que se
     # manda a la API de AnimeThemes (Winter/Spring/Summer/Fall) SIEMPRE va

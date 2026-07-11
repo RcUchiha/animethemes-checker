@@ -1068,6 +1068,24 @@ class PestanaAnimesFaltantes(PestanaEscaneoBase):
                 i18n.t("dlg_cache_vencido_msg", dias=resultado.antiguedad_cache_dias),
             )
 
+        # Aviso de fuente alterna (AniList): tercera y última capa de la
+        # cascada, solo cuando NI Jikan en vivo NI ningún caché (ni
+        # vencido) tenían nada que ofrecer — ver
+        # orq.ResultadoFaltantes.usando_anilist_como_fuente y el
+        # docstring completo de la cascada en
+        # orq.detectar_animes_faltantes_en_at. Mutuamente excluyente con
+        # el aviso de caché vencido de arriba (nunca se muestran los dos
+        # a la vez). Deliberadamente un mensaje más fuerte que el de
+        # caché vencido: acá la fuente es distinta a MAL, no la misma
+        # más vieja, así que el resultado tiene más riesgo real de
+        # imprecisión.
+        if resultado.usando_anilist_como_fuente:
+            QMessageBox.warning(
+                self,
+                i18n.t("dlg_anilist_title"),
+                i18n.t("dlg_anilist_msg", n=resultado.animes_omitidos_por_fuente_alterna),
+            )
+
     def _actualizar_textos(self):
         """Re-renderiza todas las etiquetas traducibles cuando cambia el idioma."""
         self.btn_escanear.setText(i18n.t("scan_button"))
