@@ -162,6 +162,11 @@ class AnimeDeTemporadaMAL:
     tipo: str | None  # "TV", "Movie", "OVA", "ONA", "Special", "Music", etc.
 
 
+def _animes_temporada_desde_cache(lista_cacheada: list[dict]) -> list[AnimeDeTemporadaMAL]:
+    """Reconstruye una list[AnimeDeTemporadaMAL] a partir de la lista plana guardada en cache_jikan."""
+    return [AnimeDeTemporadaMAL(**item) for item in lista_cacheada]
+
+
 def obtener_temporada_completa_mal(
     year: int, season: str, pausa_entre_paginas: float = 1.0
 ) -> list[AnimeDeTemporadaMAL]:
@@ -191,7 +196,7 @@ def obtener_temporada_completa_mal(
 
     cacheado = cache_jikan.obtener("temporada_completa_mal", clave_cache)
     if cacheado is not None:
-        return [AnimeDeTemporadaMAL(**item) for item in cacheado]
+        return _animes_temporada_desde_cache(cacheado)
 
     animes: list[AnimeDeTemporadaMAL] = []
     pagina = 1
@@ -233,3 +238,25 @@ def obtener_temporada_completa_mal(
     cache_jikan.guardar("temporada_completa_mal", clave_cache, animes_unicos)
 
     return animes_unicos
+
+
+def obtener_temporada_completa_mal_desde_cache_vencido(
+    year: int, season: str
+) -> tuple[list[AnimeDeTemporadaMAL], int] | None:
+    """
+    Devuelve (animes, dias_de_antiguedad) desde caché, ignorando si
+    venció, o None si nunca se cacheó esta temporada. NO hace ninguna
+    llamada de red — ver cache_jikan.obtener_ignorando_expiracion.
+
+    Uso: fallback de último recurso para detectar_animes_faltantes_en_at
+    cuando el listado bulk en vivo falla persistentemente (ver
+    orquestador.py) — solo sirve si esa temporada ya se escaneó con éxito
+    alguna vez antes; en un escaneo en frío durante un corte de Jikan no
+    hay nada que devolver acá.
+    """
+    clave_cache = f"{year}_{season.lower()}"
+    resultado = cache_jikan.obtener_ignorando_expiracion("temporada_completa_mal", clave_cache)
+    if resultado is None:
+        return None
+    valor, dias = resultado
+    return _animes_temporada_desde_cache(valor), dias
