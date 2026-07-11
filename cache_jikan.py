@@ -21,6 +21,17 @@ secciones, cada entrada con su fecha de guardado para poder expirarla.
 Expiración: 15 días por defecto (DIAS_EXPIRACION). Una entrada vencida se
 trata como si no existiera — se vuelve a pedir en vivo y se sobreescribe
 con la fecha nueva.
+
+Acceso alternativo a caché vencido: obtener_ignorando_expiracion() existe
+aparte de obtener() (que NUNCA sirve una entrada vencida) para un caso
+puntual y explícito — el fallback de último recurso en
+detectar_animes_faltantes_en_at (orquestador.py) cuando el listado bulk de
+MAL/Jikan en vivo falla persistentemente y esa temporada ya se había
+escaneado con éxito antes. Se mantiene como una función separada, no como
+un parámetro opcional de obtener(), para que ningún otro uso del caché
+(info_mal, temas_mal, pagina_mal) pueda terminar sirviendo un dato vencido
+"sin querer" — cada llamador que de verdad quiera ese comportamiento tiene
+que pedirlo explícitamente por su nombre.
 """
 
 from __future__ import annotations
