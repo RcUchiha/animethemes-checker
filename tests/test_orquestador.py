@@ -1,6 +1,7 @@
 """
-Tests unitarios de la alerta canario de posible cambio de HTML en MAL
-(issue #3) en orquestador.py.
+Tests unitarios de orquestador.py: la alerta canario de posible cambio de
+HTML en MAL (issue #3), el manejo de errores de red de _con_reintentos, y
+el mensaje de error traducido de detectar_animes_faltantes_en_at.
 
 mal_scraper.py no lanza ninguna excepción si deja de reconocer el HTML de
 MAL (ver su "ADVERTENCIA DE FRAGILIDAD"): simplemente devuelve una lista de
@@ -12,11 +13,21 @@ _hay_alerta_canario_mal y la property de ResultadoEscaneo son puras (no
 tocan red). _procesar_un_anime sí hace red (a través de
 ms.obtener_pagina_mal), así que se mockea igual que en el resto de la
 suite — no se toca el parser de mal_scraper.py en absoluto.
+
+_con_reintentos y detectar_animes_faltantes_en_at/escanear_temporada se
+testean mockeando el punto de red (jc.obtener_temporada_completa_mal /
+ac.obtener_animes_completos_de_temporada) y time.sleep — ningún test de
+este archivo toca red ni disco real.
 """
 
-from unittest.mock import patch
+import http.client
+import urllib.error
+from unittest.mock import Mock, patch
+
+import pytest
 
 import animethemes_client as ac
+import i18n
 import mal_scraper as ms
 import orquestador as orq
 from modelos import TemaMAL, TipoTema
@@ -151,3 +162,123 @@ class TestProcesarUnAnimeTemasMalVacio:
 
         assert resultado is not None
         assert temas_mal_vacio is True
+
+
+# ---------- _con_reintentos: errores de conexión de bajo nivel ----------
+
+class TestConReintentosErroresDeConexion:
+    """
+    Regresión: http.client.RemoteDisconnected ("Remote end closed
+    connection without response") es subclase de ConnectionResetError /
+    ConnectionError, NO de urllib.error.URLError -- urllib.request solo
+    envuelve en URLError los fallos al ABRIR la conexión (h.request()),
+    no los que ocurren al LEER la respuesta (h.getresponse()). Antes de
+    este fix, _con_reintentos no atrapaba este tipo de error: se salteaba
+    el reintento por completo y se propagaba tal cual desde el primer
+    intento.
+    """
+
+    def test_reintenta_ante_remote_disconnected_y_tiene_exito_luego(self):
+        error = http.client.RemoteDisconnected("Remote end closed connection without response")
+        funcion = Mock(side_effect=[error, error, "resultado_ok"])
+
+        with patch("orquestador.time.sleep") as mock_sleep:
+            resultado = orq._con_reintentos(funcion, intentos=5, pausa=1.0)
+
+        assert resultado == "resultado_ok"
+        assert funcion.call_count == 3
+        assert mock_sleep.call_count == 2  # una pausa entre cada par de intentos fallidos
+
+    def test_agota_reintentos_y_relanza_el_remote_disconnected_original(self):
+        error = http.client.RemoteDisconnected("Remote end closed connection without response")
+        funcion = Mock(side_effect=error)
+
+        with patch("orquestador.time.sleep"):
+            with pytest.raises(http.client.RemoteDisconnected):
+                orq._con_reintentos(funcion, intentos=3, pausa=1.0)
+
+        assert funcion.call_count == 3
+
+    def test_sigue_reintentando_ante_httperror_y_urlerror_como_antes(self):
+        # No-regresión: los tipos que ya se atrapaban antes del fix siguen
+        # atrapándose igual.
+        error = urllib.error.URLError("timed out")
+        funcion = Mock(side_effect=[error, "ok"])
+
+        with patch("orquestador.time.sleep"):
+            resultado = orq._con_reintentos(funcion, intentos=3, pausa=1.0)
+
+        assert resultado == "ok"
+        assert funcion.call_count == 2
+
+
+# ---------- detectar_animes_faltantes_en_at: mensaje de error traducido ----------
+
+class TestDetectarAnimesFaltantesEnAtErrorListadoMal:
+    """
+    detectar_animes_faltantes_en_at depende por completo del listado bulk
+    de MAL/Jikan (a diferencia de escanear_temporada, acá no hay camino de
+    respaldo posible). Si ese listado sigue fallando tras agotar
+    _con_reintentos, se relanza como orq.ErrorListadoMALNoDisponible con
+    el mensaje traducido de i18n.py -- nunca la excepción cruda de
+    urllib/http.client, que antes llegaba tal cual hasta el diálogo de
+    error de la GUI.
+    """
+
+    def test_httperror_persistente_se_traduce_a_error_amigable(self):
+        error_original = urllib.error.HTTPError("http://x", 504, "Gateway Time-out", None, None)
+        with patch("orquestador.jc.obtener_temporada_completa_mal", side_effect=error_original), \
+             patch("orquestador.time.sleep"):
+            with pytest.raises(orq.ErrorListadoMALNoDisponible) as exc_info:
+                orq.detectar_animes_faltantes_en_at(2026, "winter")
+
+        assert str(exc_info.value) == i18n.t("error_listado_mal_no_disponible")
+        assert "HTTPError" not in str(exc_info.value)
+        assert "504" not in str(exc_info.value)
+        # el detalle técnico original sigue disponible para debugging, solo que no en el mensaje visible
+        assert exc_info.value.__cause__ is error_original
+
+    def test_remote_disconnected_persistente_tambien_se_traduce(self):
+        error_original = http.client.RemoteDisconnected("Remote end closed connection without response")
+        with patch("orquestador.jc.obtener_temporada_completa_mal", side_effect=error_original), \
+             patch("orquestador.time.sleep"):
+            with pytest.raises(orq.ErrorListadoMALNoDisponible) as exc_info:
+                orq.detectar_animes_faltantes_en_at(2026, "winter")
+
+        assert str(exc_info.value) == i18n.t("error_listado_mal_no_disponible")
+        assert "Remote end closed" not in str(exc_info.value)
+        assert exc_info.value.__cause__ is error_original
+
+    def test_exito_tras_reintentar_no_lanza_nada(self):
+        # No-regresión: si el bulk se recupera dentro de los 5 intentos,
+        # detectar_animes_faltantes_en_at sigue de largo con normalidad.
+        error = urllib.error.HTTPError("http://x", 504, "Gateway Time-out", None, None)
+        with patch("orquestador.jc.obtener_temporada_completa_mal", side_effect=[error, []]), \
+             patch("orquestador.ac.obtener_animes_completos_de_temporada", return_value=[]), \
+             patch("orquestador.time.sleep"):
+            resultado = orq.detectar_animes_faltantes_en_at(2026, "winter")
+
+        assert resultado == orq.ResultadoFaltantes()
+
+
+# ---------- escanear_temporada: no-regresión del fallback al bulk de Jikan ----------
+
+class TestEscanearTemporadaFallbackBulkMal:
+    """
+    A diferencia de detectar_animes_faltantes_en_at, en escanear_temporada
+    el listado bulk de Jikan es un dato OPCIONAL: si falla persistentemente
+    (incluso tras _con_reintentos), el escaneo sigue con estado_por_mal_id
+    vacío en vez de abortar (cada anime cae a su camino de respaldo
+    individual en _procesar_un_anime). Esta función NO se modificó en este
+    fix -- este test confirma que ese comportamiento sigue exactamente
+    igual que antes.
+    """
+
+    def test_httperror_persistente_en_el_bulk_no_aborta_el_escaneo(self):
+        error = urllib.error.HTTPError("http://x", 504, "Gateway Time-out", None, None)
+        with patch("orquestador.ac.obtener_animes_completos_de_temporada", return_value=[]), \
+             patch("orquestador.jc.obtener_temporada_completa_mal", side_effect=error), \
+             patch("orquestador.time.sleep"):
+            resultado = orq.escanear_temporada(2026, "winter")
+
+        assert resultado == orq.ResultadoEscaneo()
