@@ -32,6 +32,17 @@ un parámetro opcional de obtener(), para que ningún otro uso del caché
 (info_mal, temas_mal, pagina_mal) pueda terminar sirviendo un dato vencido
 "sin querer" — cada llamador que de verdad quiera ese comportamiento tiene
 que pedirlo explícitamente por su nombre.
+
+Por la misma razón, limpiar_expirados() (ver más abajo) EXCLUYE a
+"temporada_completa_mal" de lo que borra del disco (ver
+SECCIONES_EXCLUIDAS_DE_LIMPIEZA): esa limpieza corre automáticamente al
+abrir la app (gui_pyqt6.main()), así que si no se excluyera, una entrada
+vencida se borraría físicamente la próxima vez que el usuario simplemente
+abriera el programa — antes de intentar ningún escaneo — dejando al
+fallback de arriba sin nada que servir en el uso intermitente normal
+(exactamente el escenario que existe para cubrir). El resto de las
+secciones no tiene ningún consumidor de "vencido a propósito", así que
+siguen limpiándose exactamente igual que antes.
 """
 
 from __future__ import annotations
@@ -50,6 +61,16 @@ DIAS_EXPIRACION = 15
 # por mal_scraper.obtener_pagina_mal) faltaba en limpiar_expirados(): sus
 # entradas nunca se revisaban ni se eliminaban aunque vencieran.
 SECCIONES_CONOCIDAS = ("info_mal", "temporada_completa_mal", "temas_mal", "pagina_mal")
+
+# Secciones que limpiar_expirados() NO debe borrar del disco, aunque
+# tengan entradas vencidas según _esta_vigente(). Se separa en su propia
+# constante (en vez de, ej., un if con el nombre hardcodeado adentro del
+# loop de limpiar_expirados) para que la excepción quede documentada y
+# visible en un solo lugar, fácil de auditar o de extender si aparece
+# otro caso similar. Por ahora solo "temporada_completa_mal": ver el
+# docstring del módulo (sección "Acceso alternativo a caché vencido") y
+# el de limpiar_expirados() para el porqué completo.
+SECCIONES_EXCLUIDAS_DE_LIMPIEZA = ("temporada_completa_mal",)
 
 _RUTA_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache_jikan.json")
 
@@ -164,11 +185,37 @@ def limpiar_expirados() -> int:
     eliminaron. No es necesario llamarla manualmente para que el caché
     funcione correctamente (obtener() ya ignora entradas vencidas), pero
     sirve para no dejar crecer el archivo indefinidamente con basura vieja.
+
+    "temporada_completa_mal" queda EXCLUIDA a propósito (ver
+    SECCIONES_EXCLUIDAS_DE_LIMPIEZA): sus entradas vencidas deben
+    sobrevivir en disco para que
+    jikan_client.obtener_temporada_completa_mal_desde_cache_vencido (el
+    fallback de último recurso de detectar_animes_faltantes_en_at cuando
+    el listado bulk en vivo de Jikan falla) siga teniendo algo que servir
+    sin importar cuánto tiempo pase entre sesiones — esta función corre
+    automáticamente al abrir la app (gui_pyqt6.main()), así que sin esta
+    exclusión una entrada vencida se borraría físicamente apenas el
+    usuario reabriera el programa, antes de intentar ningún escaneo.
+
+    Esto NO cambia el comportamiento de obtener() para esa sección: una
+    entrada vieja sigue tratándose como vencida y devolviendo None ahí
+    igual que siempre — lo único que cambia es que ya no se elimina
+    físicamente del archivo, para que obtener_ignorando_expiracion()
+    pueda seguir encontrándola.
+
+    Sin riesgo de crecimiento indefinido por retenerla: la clave de esta
+    sección es "{year}_{season}" (ver jikan_client.obtener_temporada_completa_mal),
+    una sola entrada por temporada — no por anime individual —, así que
+    a lo sumo crece 4 entradas por año. Nada comparable al volumen de
+    info_mal/temas_mal/pagina_mal (una entrada por anime), que sí siguen
+    limpiándose exactamente igual que antes.
     """
     eliminadas = 0
     with _lock:
         data = _cargar_archivo()
         for seccion in SECCIONES_CONOCIDAS:
+            if seccion in SECCIONES_EXCLUIDAS_DE_LIMPIEZA:
+                continue
             claves_vencidas = [
                 clave for clave, entrada in data.get(seccion, {}).items()
                 if not _esta_vigente(entrada.get("fecha", ""))
