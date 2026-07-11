@@ -484,6 +484,18 @@ def detectar_animes_faltantes_en_at(
             # una forma de respuesta inesperada, etc.), el resultado debe
             # seguir siendo el mismo mensaje traducido y prolijo, nunca
             # una excepción cruda distinta llegando a la GUI.
+            #
+            # "from e" es intencional: encadena al error ORIGINAL de
+            # Jikan (no al de AniList que se acaba de atrapar acá, que ni
+            # siquiera se captura en una variable) porque es el fallo que
+            # inició toda la cascada. Esto NO descarta la información de
+            # por qué falló AniList: al hacer raise dentro de este bloque
+            # except, Python encadena automáticamente la excepción de
+            # AniList como __context__ del ErrorListadoMALNoDisponible
+            # resultante (encadenamiento implícito, además del __cause__
+            # explícito hacia el error de Jikan) — un traceback completo
+            # (ej. un log de crash no capturado) muestra ambas cadenas,
+            # aunque solo una sea el __cause__ explícito.
             try:
                 animes_mal, animes_omitidos_por_fuente_alterna = al.obtener_temporada_completa_anilist(year, season)
             except Exception:
