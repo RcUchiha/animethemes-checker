@@ -1044,6 +1044,30 @@ class PestanaAnimesFaltantes(PestanaEscaneoBase):
         self.sub_tabs = sub  # guardado para poder retraducir sus pestañas en _actualizar_textos
         return sub
 
+    # ---------- lógica de escaneo ----------
+
+    def _on_terminado(self, resultado: orq.ResultadoFaltantes):
+        super()._on_terminado(resultado)
+
+        # Aviso de datos posiblemente desactualizados: el listado bulk de
+        # MAL/Jikan en vivo falló persistentemente y se usó un caché
+        # vencido como último recurso (ver
+        # orq.detectar_animes_faltantes_en_at y
+        # orq.ResultadoFaltantes.datos_de_temporada_desde_cache_vencido).
+        # Solo pasa si esta temporada ya se había escaneado con éxito
+        # antes; en un escaneo en frío durante un corte de Jikan esto NO
+        # aplica — ahí se ve el diálogo de error fatal en su lugar (ver
+        # ErrorListadoMALNoDisponible). Mismo patrón visual que la alerta
+        # de canario de PestanaDiscrepancias (QMessageBox.warning, no
+        # critical): no es un error de red que bloqueó el escaneo, es un
+        # aviso sobre la frescura de un resultado que YA se mostró.
+        if resultado.datos_de_temporada_desde_cache_vencido:
+            QMessageBox.warning(
+                self,
+                i18n.t("dlg_cache_vencido_title"),
+                i18n.t("dlg_cache_vencido_msg", dias=resultado.antiguedad_cache_dias),
+            )
+
     def _actualizar_textos(self):
         """Re-renderiza todas las etiquetas traducibles cuando cambia el idioma."""
         self.btn_escanear.setText(i18n.t("scan_button"))

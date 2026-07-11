@@ -138,6 +138,22 @@ TEXTOS: dict[str, dict[str, str]] = {
               "This external service is known to have intermittent outages — try again in a few minutes.",
     },
 
+    # ---- aviso: datos de temporada servidos desde caché vencido ----
+    # Se muestra con QMessageBox.warning (no critical), mismo criterio que
+    # la alerta de canario: no es un error de red que bloquea el escaneo,
+    # es un aviso sobre la frescura de un resultado que YA se mostró. Ver
+    # orq.ResultadoFaltantes.datos_de_temporada_desde_cache_vencido y el
+    # docstring de orq.detectar_animes_faltantes_en_at.
+    "dlg_cache_vencido_title": {"es": "Datos de la temporada posiblemente desactualizados",
+                                 "en": "Season data may be outdated"},
+    "dlg_cache_vencido_msg":   {"es": "No se pudo obtener el listado actualizado de la temporada desde MAL "
+                                       "(vía Jikan) — se está usando un resultado guardado de hace {dias} días. "
+                                       "Animes nuevos o cambios recientes en MAL podrían no reflejarse todavía. "
+                                       "Probá escanear de nuevo más tarde para actualizar.",
+                                 "en": "Could not get the up-to-date season list from MAL (via Jikan) — showing "
+                                       "a saved result from {dias} days ago. New anime or recent MAL changes "
+                                       "might not be reflected yet. Try scanning again later to refresh."},
+
     # ---- nombres de estaciones ----
     # NOTA: estos son solo para mostrar en la UI. El valor interno que se
     # manda a la API de AnimeThemes (Winter/Spring/Summer/Fall) SIEMPRE va

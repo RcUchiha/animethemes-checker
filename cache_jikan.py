@@ -21,6 +21,17 @@ secciones, cada entrada con su fecha de guardado para poder expirarla.
 Expiración: 15 días por defecto (DIAS_EXPIRACION). Una entrada vencida se
 trata como si no existiera — se vuelve a pedir en vivo y se sobreescribe
 con la fecha nueva.
+
+Acceso alternativo a caché vencido: obtener_ignorando_expiracion() existe
+aparte de obtener() (que NUNCA sirve una entrada vencida) para un caso
+puntual y explícito — el fallback de último recurso en
+detectar_animes_faltantes_en_at (orquestador.py) cuando el listado bulk de
+MAL/Jikan en vivo falla persistentemente y esa temporada ya se había
+escaneado con éxito antes. Se mantiene como una función separada, no como
+un parámetro opcional de obtener(), para que ningún otro uso del caché
+(info_mal, temas_mal, pagina_mal) pueda terminar sirviendo un dato vencido
+"sin querer" — cada llamador que de verdad quiera ese comportamiento tiene
+que pedirlo explícitamente por su nombre.
 """
 
 from __future__ import annotations
@@ -67,12 +78,18 @@ def _guardar_archivo(data: dict) -> None:
     os.replace(tmp, _RUTA_CACHE)  # escritura atómica: evita corromper el archivo si falla a mitad
 
 
-def _esta_vigente(fecha_guardado_iso: str) -> bool:
+def _dias_desde(fecha_guardado_iso: str) -> int | None:
+    """Días transcurridos entre fecha_guardado_iso y hoy, o None si la fecha no es parseable."""
     try:
         fecha_guardado = datetime.date.fromisoformat(fecha_guardado_iso)
     except ValueError:
-        return False
-    return (datetime.date.today() - fecha_guardado).days < DIAS_EXPIRACION
+        return None
+    return (datetime.date.today() - fecha_guardado).days
+
+
+def _esta_vigente(fecha_guardado_iso: str) -> bool:
+    dias = _dias_desde(fecha_guardado_iso)
+    return dias is not None and dias < DIAS_EXPIRACION
 
 
 def _serializar(valor):
@@ -99,6 +116,32 @@ def obtener(seccion: str, clave: str):
     if not _esta_vigente(entrada.get("fecha", "")):
         return None
     return entrada.get("valor")
+
+
+def obtener_ignorando_expiracion(seccion: str, clave: str) -> tuple[object, int] | None:
+    """
+    Devuelve (valor, dias_de_antiguedad) si existe una entrada para esta
+    clave, SIN IMPORTAR si venció o no. None solo si la clave nunca
+    existió (la única excepción práctica: una fecha guardada corrupta/no
+    parseable, en cuyo caso tampoco hay una antigüedad real que devolver
+    — mismo criterio defensivo que _esta_vigente).
+
+    Uso: fallback explícito de último recurso cuando el llamador prefiere
+    datos viejos a no tener nada — el llamador es responsable de
+    comunicarle al usuario que los datos pueden estar desactualizados;
+    esta función no lo hace por sí sola. A diferencia de obtener() (que
+    NUNCA sirve una entrada vencida), esta siempre la sirve si existe.
+    """
+    with _lock:
+        data = _cargar_archivo()
+        entrada = data.get(seccion, {}).get(str(clave))
+
+    if entrada is None:
+        return None
+    dias = _dias_desde(entrada.get("fecha", ""))
+    if dias is None:
+        return None
+    return entrada.get("valor"), dias
 
 
 def guardar(seccion: str, clave: str, valor) -> None:

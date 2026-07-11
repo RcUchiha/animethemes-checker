@@ -1,7 +1,9 @@
 """
 Tests unitarios de orquestador.py: la alerta canario de posible cambio de
-HTML en MAL (issue #3), el manejo de errores de red de _con_reintentos, y
-el mensaje de error traducido de detectar_animes_faltantes_en_at.
+HTML en MAL (issue #3), el manejo de errores de red de _con_reintentos, el
+mensaje de error traducido de detectar_animes_faltantes_en_at, y su
+fallback a caché vencido cuando el listado bulk de MAL/Jikan sigue
+fallando tras agotar reintentos.
 
 mal_scraper.py no lanza ninguna excepción si deja de reconocer el HTML de
 MAL (ver su "ADVERTENCIA DE FRAGILIDAD"): simplemente devuelve una lista de
@@ -28,6 +30,7 @@ import pytest
 
 import animethemes_client as ac
 import i18n
+import jikan_client as jc
 import mal_scraper as ms
 import orquestador as orq
 from modelos import TemaMAL, TipoTema
@@ -217,17 +220,23 @@ class TestConReintentosErroresDeConexion:
 class TestDetectarAnimesFaltantesEnAtErrorListadoMal:
     """
     detectar_animes_faltantes_en_at depende por completo del listado bulk
-    de MAL/Jikan (a diferencia de escanear_temporada, acá no hay camino de
-    respaldo posible). Si ese listado sigue fallando tras agotar
-    _con_reintentos, se relanza como orq.ErrorListadoMALNoDisponible con
-    el mensaje traducido de i18n.py -- nunca la excepción cruda de
+    de MAL/Jikan. Si ese listado sigue fallando tras agotar
+    _con_reintentos, primero se intenta un último recurso (caché vencido,
+    ver TestDetectarAnimesFaltantesEnAtFallbackCacheVencido más abajo); si
+    tampoco hay nada cacheado, se relanza como orq.ErrorListadoMALNoDisponible
+    con el mensaje traducido de i18n.py -- nunca la excepción cruda de
     urllib/http.client, que antes llegaba tal cual hasta el diálogo de
     error de la GUI.
+
+    Estos tests mockean obtener_temporada_completa_mal_desde_cache_vencido
+    con return_value=None (nunca se cacheó esta temporada) para aislar el
+    camino "sin nada que servir" del camino con fallback.
     """
 
     def test_httperror_persistente_se_traduce_a_error_amigable(self):
         error_original = urllib.error.HTTPError("http://x", 504, "Gateway Time-out", None, None)
         with patch("orquestador.jc.obtener_temporada_completa_mal", side_effect=error_original), \
+             patch("orquestador.jc.obtener_temporada_completa_mal_desde_cache_vencido", return_value=None), \
              patch("orquestador.time.sleep"):
             with pytest.raises(orq.ErrorListadoMALNoDisponible) as exc_info:
                 orq.detectar_animes_faltantes_en_at(2026, "winter")
@@ -241,6 +250,7 @@ class TestDetectarAnimesFaltantesEnAtErrorListadoMal:
     def test_remote_disconnected_persistente_tambien_se_traduce(self):
         error_original = http.client.RemoteDisconnected("Remote end closed connection without response")
         with patch("orquestador.jc.obtener_temporada_completa_mal", side_effect=error_original), \
+             patch("orquestador.jc.obtener_temporada_completa_mal_desde_cache_vencido", return_value=None), \
              patch("orquestador.time.sleep"):
             with pytest.raises(orq.ErrorListadoMALNoDisponible) as exc_info:
                 orq.detectar_animes_faltantes_en_at(2026, "winter")
@@ -251,14 +261,69 @@ class TestDetectarAnimesFaltantesEnAtErrorListadoMal:
 
     def test_exito_tras_reintentar_no_lanza_nada(self):
         # No-regresión: si el bulk se recupera dentro de los 5 intentos,
-        # detectar_animes_faltantes_en_at sigue de largo con normalidad.
+        # detectar_animes_faltantes_en_at sigue de largo con normalidad,
+        # sin llegar siquiera a considerar el fallback de caché vencido.
         error = urllib.error.HTTPError("http://x", 504, "Gateway Time-out", None, None)
         with patch("orquestador.jc.obtener_temporada_completa_mal", side_effect=[error, []]), \
+             patch("orquestador.jc.obtener_temporada_completa_mal_desde_cache_vencido") as mock_fallback, \
              patch("orquestador.ac.obtener_animes_completos_de_temporada", return_value=[]), \
              patch("orquestador.time.sleep"):
             resultado = orq.detectar_animes_faltantes_en_at(2026, "winter")
 
         assert resultado == orq.ResultadoFaltantes()
+        mock_fallback.assert_not_called()
+
+
+# ---------- detectar_animes_faltantes_en_at: fallback a caché vencido ----------
+
+class TestDetectarAnimesFaltantesEnAtFallbackCacheVencido:
+    """
+    Si el listado bulk en vivo agota reintentos pero SÍ hay una entrada
+    cacheada para esa (year, season) -- aunque haya vencido sus 15 días --
+    se usa como último recurso en vez de fallar, y ResultadoFaltantes
+    queda marcado para que gui_pyqt6.py avise al usuario. Ver
+    jikan_client.obtener_temporada_completa_mal_desde_cache_vencido.
+    """
+
+    def test_fallback_exitoso_usa_cache_vencido_y_marca_los_campos(self):
+        error = urllib.error.HTTPError("http://x", 504, "Gateway Time-out", None, None)
+        animes_cacheados = [
+            jc.AnimeDeTemporadaMAL(mal_id=1, titulo="Anime Cacheado", status="Finished Airing", tipo="TV"),
+        ]
+        with patch("orquestador.jc.obtener_temporada_completa_mal", side_effect=error), \
+             patch("orquestador.jc.obtener_temporada_completa_mal_desde_cache_vencido",
+                   return_value=(animes_cacheados, 23)), \
+             patch("orquestador.ac.obtener_animes_completos_de_temporada", return_value=[]), \
+             patch("orquestador.ms.obtener_temas_mal", return_value=[]), \
+             patch("orquestador.time.sleep"):
+            resultado = orq.detectar_animes_faltantes_en_at(2026, "winter")
+
+        # No se lanzó ErrorListadoMALNoDisponible: el escaneo siguió de largo.
+        assert resultado.datos_de_temporada_desde_cache_vencido is True
+        assert resultado.antiguedad_cache_dias == 23
+
+    def test_sin_cache_alguno_sigue_lanzando_error_como_antes(self):
+        # No-regresión explícita: si obtener_temporada_completa_mal_desde_cache_vencido
+        # devuelve None (nunca se cacheó), el comportamiento es EXACTAMENTE
+        # el de antes de este fallback -- ErrorListadoMALNoDisponible.
+        error = urllib.error.HTTPError("http://x", 504, "Gateway Time-out", None, None)
+        with patch("orquestador.jc.obtener_temporada_completa_mal", side_effect=error), \
+             patch("orquestador.jc.obtener_temporada_completa_mal_desde_cache_vencido", return_value=None), \
+             patch("orquestador.time.sleep"):
+            with pytest.raises(orq.ErrorListadoMALNoDisponible):
+                orq.detectar_animes_faltantes_en_at(2026, "winter")
+
+    def test_caso_normal_sin_fallback_deja_los_campos_en_default(self):
+        # Caso feliz: Jikan responde bien, no se llega a considerar el
+        # fallback en absoluto.
+        with patch("orquestador.jc.obtener_temporada_completa_mal", return_value=[]), \
+             patch("orquestador.jc.obtener_temporada_completa_mal_desde_cache_vencido") as mock_fallback, \
+             patch("orquestador.ac.obtener_animes_completos_de_temporada", return_value=[]):
+            resultado = orq.detectar_animes_faltantes_en_at(2026, "winter")
+
+        assert resultado.datos_de_temporada_desde_cache_vencido is False
+        assert resultado.antiguedad_cache_dias is None
+        mock_fallback.assert_not_called()
 
 
 # ---------- escanear_temporada: no-regresión del fallback al bulk de Jikan ----------

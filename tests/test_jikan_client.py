@@ -11,6 +11,8 @@ tests. Casos cubiertos según los docstrings del módulo:
   encontrado) — es el bug conocido documentado en el módulo.
 - obtener_temporada_completa_mal deduplica mal_ids repetidos entre páginas
   de /seasons/{year}/{season}, conservando la primera ocurrencia.
+- obtener_temporada_completa_mal_desde_cache_vencido NUNCA hace red (ni
+  siquiera llama a _get_json) — solo lee cache_jikan.obtener_ignorando_expiracion.
 """
 
 import urllib.error
@@ -196,3 +198,50 @@ class TestObtenerTemporadaCompletaMal:
         # pausa propia de esta función entre páginas (ver docstring).
         assert mock_esperar_turno.call_count == 2
         mock_sleep.assert_called_once_with(1.0)
+
+
+# ---------- obtener_temporada_completa_mal_desde_cache_vencido ----------
+
+class TestObtenerTemporadaCompletaMalDesdeCacheVencido:
+
+    def test_cache_vencido_presente_devuelve_animes_y_antiguedad(self):
+        cacheado = [
+            {"mal_id": 1, "titulo": "Anime A", "status": "Finished Airing", "tipo": "TV"},
+        ]
+        with patch("jikan_client.cache_jikan.obtener_ignorando_expiracion",
+                    return_value=(cacheado, 20)) as mock_obtener, \
+             patch("jikan_client._get_json") as mock_get:
+            resultado = jc.obtener_temporada_completa_mal_desde_cache_vencido(2026, "winter")
+
+        assert resultado == ([jc.AnimeDeTemporadaMAL(**cacheado[0])], 20)
+        mock_obtener.assert_called_once_with("temporada_completa_mal", "2026_winter")
+        mock_get.assert_not_called()
+
+    def test_cache_vigente_presente_tambien_devuelve_animes_y_antiguedad(self):
+        # obtener_ignorando_expiracion no distingue vigente/vencido -- esta
+        # función tampoco: simplemente pasa lo que reciba.
+        cacheado = [
+            {"mal_id": 2, "titulo": "Anime B", "status": "Finished Airing", "tipo": "TV"},
+        ]
+        with patch("jikan_client.cache_jikan.obtener_ignorando_expiracion",
+                    return_value=(cacheado, 0)), \
+             patch("jikan_client._get_json") as mock_get:
+            resultado = jc.obtener_temporada_completa_mal_desde_cache_vencido(2026, "winter")
+
+        assert resultado == ([jc.AnimeDeTemporadaMAL(**cacheado[0])], 0)
+        mock_get.assert_not_called()
+
+    def test_sin_cache_en_absoluto_devuelve_none(self):
+        with patch("jikan_client.cache_jikan.obtener_ignorando_expiracion", return_value=None), \
+             patch("jikan_client._get_json") as mock_get:
+            resultado = jc.obtener_temporada_completa_mal_desde_cache_vencido(2026, "winter")
+
+        assert resultado is None
+        mock_get.assert_not_called()
+
+    def test_clave_de_cache_usa_year_y_season_en_minuscula(self):
+        with patch("jikan_client.cache_jikan.obtener_ignorando_expiracion",
+                    return_value=None) as mock_obtener:
+            jc.obtener_temporada_completa_mal_desde_cache_vencido(2026, "WINTER")
+
+        mock_obtener.assert_called_once_with("temporada_completa_mal", "2026_winter")
