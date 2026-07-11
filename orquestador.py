@@ -100,6 +100,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable, TypeVar
 
+import anilist_client as al
 import animethemes_client as ac
 import comparador
 import i18n
@@ -347,14 +348,29 @@ class ResultadoFaltantes:
     docstring de detectar_animes_faltantes_en_at para el fallback que los
     produce. True solo cuando el listado bulk de MAL/Jikan en vivo falló
     persistentemente y se sirvió una entrada de caché vencida en su lugar
-    (último recurso) — en el camino normal (Jikan responde bien), o en
-    cualquier código que construya ResultadoFaltantes() a mano (ej.
-    tests), quedan en sus valores por defecto.
+    (segunda capa de la cascada de resiliencia).
+
+    usando_anilist_como_fuente / animes_omitidos_por_fuente_alterna: ver
+    el mismo docstring para la TERCERA capa — se usa AniList como último
+    recurso solo cuando Jikan en vivo falló Y no había ningún caché
+    (ni vencido) para esa temporada. animes_omitidos_por_fuente_alterna
+    cuenta cuántos animes de AniList se excluyeron del resultado por no
+    tener vínculo a MAL (idMal) cargado — ver anilist_client.py.
+
+    Estos dos pares de campos son MUTUAMENTE EXCLUYENTES: nunca están
+    ambos en True a la vez, porque son ramas distintas de la misma
+    cascada en cascada (si se usó el caché vencido, ni siquiera se llega
+    a intentar AniList, y viceversa). En el camino normal (Jikan
+    responde bien), o en cualquier código que construya
+    ResultadoFaltantes() a mano (ej. tests), los cuatro quedan en sus
+    valores por defecto.
     """
     faltantes: list[AnimeFaltanteEnAT] = field(default_factory=list)
     errores: list[tuple[str, str]] = field(default_factory=list)  # (titulo, mensaje)
     datos_de_temporada_desde_cache_vencido: bool = False
     antiguedad_cache_dias: int | None = None
+    usando_anilist_como_fuente: bool = False
+    animes_omitidos_por_fuente_alterna: int = 0
 
 
 # Tipos que de entrada NO consideramos candidatos a faltarle a AnimeThemes:
@@ -402,45 +418,77 @@ def detectar_animes_faltantes_en_at(
     si falla incluso con esta paciencia extra, no hay forma de continuar.
 
     Si el listado bulk en vivo falla persistentemente, ANTES de rendirse
-    se intenta un último recurso: jc.obtener_temporada_completa_mal_desde_cache_vencido,
-    que sirve la última entrada cacheada para esa (year, season) aunque
-    haya superado sus 15 días de vigencia (ver cache_jikan.obtener_ignorando_expiracion).
-    Si existe, se usa esa lista y ResultadoFaltantes queda marcado con
-    datos_de_temporada_desde_cache_vencido=True y
-    antiguedad_cache_dias=<días reales>, para que el llamador (gui_pyqt6.py)
-    avise al usuario que el resultado puede estar desactualizado, en vez
-    de fallar directamente.
+    se recorre una cascada de 3 capas, cada una un escalón MENOS
+    confiable que la anterior — se intenta la siguiente solo si la
+    anterior no tiene nada que ofrecer, nunca "a la misma altura":
 
-    Límite honesto de este fallback: SOLO ayuda si esa temporada ya se
-    había escaneado con éxito alguna vez antes (por eso hay algo cacheado
-    para servir). En un escaneo en frío de una temporada que nunca se
-    escaneó, durante un corte de Jikan, no hay nada que devolver — ahí
-    sigue aplicando lo de siempre: en vez de dejar que la excepción cruda
-    de urllib/http.client (ej. "HTTP Error 504: Gateway Time-out" o
-    "Remote end closed connection without response") llegue tal cual
-    hasta la GUI, se relanza como ErrorListadoMALNoDisponible con un
-    mensaje traducido y sin jerga técnica (ver i18n.py, clave
-    "error_listado_mal_no_disponible") — la excepción original queda
-    encadenada (raise ... from e) para quien necesite el detalle técnico
-    real. Este 504 en particular es un problema conocido y documentado en
-    el propio repo de Jikan (https://github.com/jikan-me/jikan-rest/issues/607,
-    intermitente y sin ETA de fix de los mantenedores al momento de
-    escribir esto), no algo que podamos arreglar desde acá — por eso el
-    mensaje invita a reintentar más tarde en vez de sugerir que hay algo
-    mal en la app.
+    1. jc.obtener_temporada_completa_mal (Jikan en vivo) — la fuente
+       normal, siempre se intenta primero.
+    2. jc.obtener_temporada_completa_mal_desde_cache_vencido — sirve la
+       última entrada cacheada para esa (year, season) aunque haya
+       superado sus 15 días de vigencia (ver
+       cache_jikan.obtener_ignorando_expiracion). Si existe, se usa y
+       ResultadoFaltantes queda marcado con
+       datos_de_temporada_desde_cache_vencido=True y
+       antiguedad_cache_dias=<días reales>. Tiene prioridad sobre
+       AniList porque sigue siendo la MISMA fuente (MAL), solo
+       desactualizada — el dato en sí es correcto, solo puede estar
+       incompleto (animes nuevos no reflejados).
+    3. al.obtener_temporada_completa_anilist — SOLO si el paso 2 también
+       devuelve None (nunca se cacheó esa temporada; típicamente la
+       primera vez que se escanea una temporada recién anunciada,
+       justo durante un corte de Jikan — el momento de mayor uso real).
+       AniList es una fuente DISTINTA con más riesgo: su vínculo hacia
+       MAL (idMal) es dato crowd-sourced que puede faltar (se cuenta y
+       excluye, ver animes_omitidos_por_fuente_alterna) o estar
+       directamente mal cargado (riesgo real, no detectable acá — ver
+       anilist_client.py). Por eso es el ÚLTIMO intento, nunca un
+       reemplazo de los dos anteriores. Si responde,
+       ResultadoFaltantes queda marcado con
+       usando_anilist_como_fuente=True para que gui_pyqt6.py se lo deje
+       clarísimo al usuario, sin mezclarlo en silencio con un resultado
+       de Jikan.
+
+    Si NINGUNA de las 3 capas tiene nada que ofrecer, en vez de dejar
+    que la excepción cruda de urllib/http.client (ej. "HTTP Error 504:
+    Gateway Time-out" o "Remote end closed connection without
+    response") llegue tal cual hasta la GUI, se relanza como
+    ErrorListadoMALNoDisponible con un mensaje traducido y sin jerga
+    técnica (ver i18n.py, clave "error_listado_mal_no_disponible") —
+    la excepción original de Jikan queda encadenada (raise ... from e)
+    para quien necesite el detalle técnico real. Este 504 en particular
+    es un problema conocido y documentado en el propio repo de Jikan
+    (https://github.com/jikan-me/jikan-rest/issues/607, intermitente y
+    sin ETA de fix de los mantenedores al momento de escribir esto), no
+    algo que podamos arreglar desde acá — por eso el mensaje invita a
+    reintentar más tarde en vez de sugerir que hay algo mal en la app.
     """
     datos_de_temporada_desde_cache_vencido = False
     antiguedad_cache_dias = None
+    usando_anilist_como_fuente = False
+    animes_omitidos_por_fuente_alterna = 0
     try:
         animes_mal = _con_reintentos(
             lambda: jc.obtener_temporada_completa_mal(year, season), intentos=5, pausa=3.0
         )
     except (urllib.error.HTTPError, urllib.error.URLError, ConnectionError) as e:
         respaldo = jc.obtener_temporada_completa_mal_desde_cache_vencido(year, season)
-        if respaldo is None:
-            raise ErrorListadoMALNoDisponible(i18n.t("error_listado_mal_no_disponible")) from e
-        animes_mal, antiguedad_cache_dias = respaldo
-        datos_de_temporada_desde_cache_vencido = True
+        if respaldo is not None:
+            animes_mal, antiguedad_cache_dias = respaldo
+            datos_de_temporada_desde_cache_vencido = True
+        else:
+            # Último recurso: ni Jikan en vivo ni ningún caché tienen
+            # nada que ofrecer. Se atrapa cualquier excepción acá (no
+            # solo HTTPError/URLError/ConnectionError) porque este es el
+            # final de la cascada — si AniList falla por lo que sea (red,
+            # una forma de respuesta inesperada, etc.), el resultado debe
+            # seguir siendo el mismo mensaje traducido y prolijo, nunca
+            # una excepción cruda distinta llegando a la GUI.
+            try:
+                animes_mal, animes_omitidos_por_fuente_alterna = al.obtener_temporada_completa_anilist(year, season)
+            except Exception:
+                raise ErrorListadoMALNoDisponible(i18n.t("error_listado_mal_no_disponible")) from e
+            usando_anilist_como_fuente = True
 
     animes_at = _con_reintentos(lambda: ac.obtener_animes_completos_de_temporada(year, season, max_hilos=4))
 
@@ -453,6 +501,8 @@ def detectar_animes_faltantes_en_at(
     salida = ResultadoFaltantes(
         datos_de_temporada_desde_cache_vencido=datos_de_temporada_desde_cache_vencido,
         antiguedad_cache_dias=antiguedad_cache_dias,
+        usando_anilist_como_fuente=usando_anilist_como_fuente,
+        animes_omitidos_por_fuente_alterna=animes_omitidos_por_fuente_alterna,
     )
     total = len(candidatos)
     salida_lock = threading.Lock()
