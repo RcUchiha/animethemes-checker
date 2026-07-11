@@ -102,6 +102,7 @@ from typing import Callable, TypeVar
 
 import animethemes_client as ac
 import comparador
+import i18n
 import jikan_client as jc
 import mal_scraper as ms
 from modelos import ResultadoAnime
@@ -112,24 +113,64 @@ REINTENTOS_POR_DEFECTO = 3
 PAUSA_ENTRE_REINTENTOS = 2.0  # segundos
 
 
+class ErrorListadoMALNoDisponible(Exception):
+    """
+    Se lanza cuando el listado bulk de una temporada en MAL/Jikan
+    (jc.obtener_temporada_completa_mal) sigue fallando tras agotar
+    _con_reintentos, en un llamador para el que ese dato NO es opcional
+    (ver detectar_animes_faltantes_en_at).
+
+    El mensaje de esta excepción (str(e)) es SIEMPRE el texto traducido de
+    i18n.py, sin jerga técnica — es lo que termina viendo el usuario en el
+    diálogo de error de gui_pyqt6.py (vía _WorkerEscaneo -> error_fatal ->
+    _on_error_fatal, que solo hace str(e), sin distinguir tipos de
+    excepción). La excepción original de urllib/http.client se encadena
+    con 'raise ... from e' y queda disponible en __cause__ para quien
+    necesite el detalle técnico real (ej. un traceback de debug), pero
+    nunca llega a la UI.
+    """
+
+
 def _con_reintentos(
     funcion: Callable[[], _T],
     intentos: int = REINTENTOS_POR_DEFECTO,
     pausa: float = PAUSA_ENTRE_REINTENTOS,
 ) -> _T:
     """
-    Ejecuta funcion() y reintenta si falla con un error de red transitorio
-    (HTTPError, URLError — incluye timeouts, 502/503/504, conexión
-    rechazada, etc.). Tras el último intento fallido, relanza la excepción
-    para que el llamador decida qué hacer (registrar como error, abortar,
-    etc.) — este helper solo absorbe fallos TRANSITORIOS reintentando, no
-    decide la política de qué hacer si nunca se recupera.
+    Ejecuta funcion() y reintenta si falla con un error de red transitorio:
+    HTTPError, URLError (timeouts, 502/503/504, fallo al abrir la conexión,
+    etc.) y ConnectionError.
+
+    Por qué también ConnectionError, y por qué la clase base en vez de
+    enumerar subtipos: se confirmó con una corrida real contra un corte de
+    Jikan que un servidor que acepta la conexión pero la corta a mitad de
+    la respuesta genera http.client.RemoteDisconnected ("Remote end closed
+    connection without response"), que NO es subclase de URLError —
+    urllib.request solo envuelve en URLError los fallos al ABRIR la
+    conexión (dentro de h.request()); los que ocurren después, al LEER la
+    respuesta (h.getresponse()), se propagan tal cual. Antes de este fix,
+    ese error se saltaba el reintento por completo y salía del primer
+    intento sin que _con_reintentos hiciera nada. RemoteDisconnected es
+    subclase de ConnectionResetError, que junto con ConnectionRefusedError
+    y BrokenPipeError comparten ConnectionError como base común en la
+    stdlib — se atrapa esa base en vez de listar los subtipos uno por uno
+    para no volver a dejar un hueco si aparece otro subtipo de conexión
+    caída. NO se agrega http.client.HTTPException en general (ej.
+    IncompleteRead): es una familia de error distinta (respuesta que llegó
+    pero está incompleta/mal formada, no una conexión caída) sin evidencia
+    todavía de que ocurra en la práctica — agregarla sin un caso real
+    concreto sería adivinar.
+
+    Tras el último intento fallido, relanza la excepción para que el
+    llamador decida qué hacer (registrar como error, abortar, etc.) —
+    este helper solo absorbe fallos TRANSITORIOS reintentando, no decide
+    la política de qué hacer si nunca se recupera.
     """
     ultimo_error: Exception | None = None
     for intento in range(1, intentos + 1):
         try:
             return funcion()
-        except (urllib.error.HTTPError, urllib.error.URLError) as e:
+        except (urllib.error.HTTPError, urllib.error.URLError, ConnectionError) as e:
             ultimo_error = e
             if intento < intentos:
                 time.sleep(pausa)
@@ -331,13 +372,14 @@ def detectar_animes_faltantes_en_at(
     se cumple, así que se eliminó para evitar falsos positivos.
 
     Todas las llamadas de red (incluidas las 2 masivas iniciales) usan
-    _con_reintentos. Un fallo persistente en las llamadas masivas iniciales
-    se relanza (no hay nada que escanear sin esa data base — a diferencia
-    de escanear_temporada, acá el listado de MAL/Jikan no es opcional: es
-    la base entera de la comparación, no hay camino de respaldo posible
-    sin él); un fallo persistente al scrapear un candidato puntual se
-    registra en resultado.errores y se sigue con el resto, en vez de
-    tronar todo.
+    _con_reintentos. Un fallo persistente en cualquiera de las llamadas
+    masivas iniciales se relanza (no hay nada que escanear sin esa data
+    base — a diferencia de escanear_temporada, acá el listado de MAL/Jikan
+    no es opcional: es la base entera de la comparación, no hay camino de
+    respaldo posible sin él): el listado de AnimeThemes se relanza tal
+    cual (ver más abajo por qué el de MAL/Jikan no); un fallo persistente
+    al scrapear un candidato puntual se registra en resultado.errores y se
+    sigue con el resto, en vez de tronar todo.
 
     El listado bulk de Jikan recibe más paciencia que el resto (5
     intentos, 3 segundos entre cada uno, en vez de los 3/2s por defecto)
@@ -345,13 +387,28 @@ def detectar_animes_faltantes_en_at(
     criterio que ya se usa en escanear_temporada. Aun con eso, sigue
     siendo un servicio externo, gratuito y a veces inestable (ver
     jikan_client.py y https://github.com/jikan-me/jikan-rest/issues/378):
-    si falla incluso con esta paciencia extra, no hay forma de continuar
-    y el error se propaga, pero al menos le damos la mejor oportunidad
-    posible de recuperarse antes de rendirnos.
+    si falla incluso con esta paciencia extra, no hay forma de continuar.
+
+    En vez de dejar que la excepción cruda de urllib/http.client (ej.
+    "HTTP Error 504: Gateway Time-out" o "Remote end closed connection
+    without response") llegue tal cual hasta la GUI, se relanza como
+    ErrorListadoMALNoDisponible con un mensaje traducido y sin jerga
+    técnica (ver i18n.py, clave "error_listado_mal_no_disponible") —
+    la excepción original queda encadenada (raise ... from e) para quien
+    necesite el detalle técnico real. Este 504 en particular es un
+    problema conocido y documentado en el propio repo de Jikan
+    (https://github.com/jikan-me/jikan-rest/issues/607, intermitente y
+    sin ETA de fix de los mantenedores al momento de escribir esto), no
+    algo que podamos arreglar desde acá — por eso el mensaje invita a
+    reintentar más tarde en vez de sugerir que hay algo mal en la app.
     """
-    animes_mal = _con_reintentos(
-        lambda: jc.obtener_temporada_completa_mal(year, season), intentos=5, pausa=3.0
-    )
+    try:
+        animes_mal = _con_reintentos(
+            lambda: jc.obtener_temporada_completa_mal(year, season), intentos=5, pausa=3.0
+        )
+    except (urllib.error.HTTPError, urllib.error.URLError, ConnectionError) as e:
+        raise ErrorListadoMALNoDisponible(i18n.t("error_listado_mal_no_disponible")) from e
+
     animes_at = _con_reintentos(lambda: ac.obtener_animes_completos_de_temporada(year, season, max_hilos=4))
 
     candidatos_brutos = comparador.detectar_animes_faltantes_en_animethemes(animes_at, animes_mal)

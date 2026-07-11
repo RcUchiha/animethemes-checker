@@ -125,6 +125,19 @@ TEXTOS: dict[str, dict[str, str]] = {
     "dlg_exported_title":       {"es": "Exportado", "en": "Exported"},
     "dlg_exported_msg":         {"es": "CSV guardado en:\n{path}", "en": "CSV saved to:\n{path}"},
 
+    # ---- errores de red conocidos ----
+    # Mensaje deliberadamente sin jerga técnica (nada de "HTTPError", "504"
+    # ni "urllib") — ver orquestador.ErrorListadoMALNoDisponible. El
+    # detalle técnico real queda en la excepción encadenada (__cause__),
+    # no en este texto, que es lo único que llega a la GUI.
+    "error_listado_mal_no_disponible": {
+        "es": "No se pudo obtener el listado completo de la temporada desde MAL (vía Jikan) "
+              "después de varios intentos. Este servicio externo es conocido por tener cortes "
+              "intermitentes — probá de nuevo en unos minutos.",
+        "en": "Could not get the full season list from MAL (via Jikan) after several attempts. "
+              "This external service is known to have intermittent outages — try again in a few minutes.",
+    },
+
     # ---- nombres de estaciones ----
     # NOTA: estos son solo para mostrar en la UI. El valor interno que se
     # manda a la API de AnimeThemes (Winter/Spring/Summer/Fall) SIEMPRE va
