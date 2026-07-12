@@ -503,6 +503,14 @@ class PestanaEscaneoBase(QWidget):
         self.label_temporada = QLabel(i18n.t("season_label"))
         fila.addWidget(self.label_temporada)
         self.combo_season = QComboBox()
+        # AdjustToContents (en vez del default AdjustToContentsOnFirstShow):
+        # _poblar_combo_temporadas repuebla este combo con textos
+        # traducidos al cambiar de idioma (ver _actualizar_textos), y el
+        # default de Qt solo calcula el ancho la primera vez que se
+        # muestra en pantalla, sin recalcularlo después — un idioma con
+        # texto más largo que el que estaba al abrir la app (ej.
+        # "Primavera" vs "Spring") quedaba cortado con puntos suspensivos.
+        self.combo_season.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         # Conectado por índice, no por texto: el texto mostrado cambia de
         # idioma, pero el valor real que nos interesa (userData, en
         # inglés) no. Ver _poblar_combo_temporadas.
@@ -705,6 +713,12 @@ class PestanaDiscrepancias(PestanaEscaneoBase):
         self.label_filtro = QLabel(i18n.t("filter_label"))
         fila_estado.addWidget(self.label_filtro)
         self.combo_filtro = QComboBox()
+        # AdjustToContents: mismo motivo que combo_season más arriba —
+        # _actualizar_textos reconstruye self.OPCIONES_FILTRO y repuebla
+        # este combo al cambiar de idioma, y el default de Qt
+        # (AdjustToContentsOnFirstShow) no recalcula el ancho después del
+        # primer show(), cortando textos más largos con puntos suspensivos.
+        self.combo_filtro.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         self.combo_filtro.addItems(self.OPCIONES_FILTRO.keys())
         self.combo_filtro.currentTextChanged.connect(self._aplicar_filtro)
         fila_estado.addWidget(self.combo_filtro)
